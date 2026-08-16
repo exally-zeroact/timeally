@@ -26,8 +26,15 @@ const ok = (v, m) => { if (!v) throw new Error(m || 'false'); };
 
 /* 打刻を作る小道具（★中身は全部 手で書いた実物の時刻★） */
 const P = (at, kind, src) => ({ at, kind, src: src || 'punch' });
+/* ★このファイルは「休憩を引く前の線」を測る★（2026-08-15）
+   同じ日に ★休憩の既定★ を入れたまま所定超や残業の境目を測ると、
+   ★どの数字がどの決まりで動いたのか 分からなくなる★。
+   ⇒ ここでは ★休憩の既定を0分に固定★して、他の決まりだけを測る。
+      ★休憩そのものは tests/break.test.mjs が 既定60分の実物で測る★（両方 走らせている）。
+   会社の設定で上書きしたい時は company に breakDefaultMin を書けばよい。 */
 function run(punches, company, extra) {
-  return C.summarize(Object.assign({ ym: '2026-08', punches: punches, shifts: [], fixes: [] }, extra || {}, { company: company || {} }));
+  var co = Object.assign({ breakDefaultMin: 0 }, company || {});
+  return C.summarize(Object.assign({ ym: '2026-08', punches: punches, shifts: [], fixes: [] }, extra || {}, { company: co }));
 }
 const D1 = (s) => s.days.find((d) => d.d === '2026-08-03');   // 2026-08-03 は ★月曜★
 
@@ -74,14 +81,16 @@ T('★休憩 8h00 ちょうどは45分でよい／8h01 から60分要る', () =>
   eq(LAW.requiredBreakMin(8 * 60), 45, '8時間ちょうど');
   eq(LAW.requiredBreakMin(8 * 60 + 1), 60, '8時間1分');
 });
-T('★休憩不足は「拘束時間」で判定する（実労働だけで見ると1分足りない日を見逃す）', () => {
-  // 9:00-15:01（拘束361分・休憩0）→ 45分要るのに0分 ⇒ 警告
-  const s = run([P('2026-08-03T09:00', 'in'), P('2026-08-03T15:01', 'out')]);
-  const w = s.warnings.filter((x) => x.code === 'break_short');
-  eq(w.length, 1); eq(w[0].need, 45); eq(w[0].got, 0);
-  // 9:00-15:00（拘束360分ちょうど）→ 警告なし
-  const s2 = run([P('2026-08-03T09:00', 'in'), P('2026-08-03T15:00', 'out')]);
-  eq(s2.warnings.filter((x) => x.code === 'break_short').length, 0, '6時間ちょうどで誤警告');
+/* ★気づき（警告）は 2026-08-15 に丸ごと外した★（司さんの決定）ので、
+   ここでは ★法定の線そのもの★を測る（線は lib/tc-law.js に残っていて、
+   会社情報の赤（休憩の既定が法定を下回る）が この線を使う）。 */
+T('★休憩の法定の線は「拘束時間」で決まる（実労働だけで見ると1分足りない日を見逃す）', () => {
+  eq(LAW.requiredBreakMin(361), 45, '拘束6時間1分');
+  eq(LAW.requiredBreakMin(360), 0, '拘束6時間ちょうど');
+  /* 会社情報の赤も この線から出る（所定480＋既定30＝拘束510 → 60分 要る） */
+  const r = LAW.breakDefaultCheck(480, 30);
+  eq(r.short, true); eq(r.need, 60); eq(r.spanMin, 510);
+  eq(LAW.breakDefaultCheck(480, 60).short, false, '所定8時間＋休憩60分は足りている');
 });
 
 /* ── 残業の境界（所定超と法定外を混ぜない） ──────────────────────── */
@@ -124,7 +133,7 @@ T('★日をまたぐ勤務は「出勤した日」に付ける（翌日に割�
   const d = D1(s), n = s.days.find((x) => x.d === '2026-08-04');
   eq(d.workMin, 480, '出勤日にまとめる'); eq(n.workMin, 0, '翌日は0');
   ok(d.crossMidnight, '日またぎの印が付いていない');
-  eq(s.warnings.filter((w) => w.code === 'cross_midnight').length, 1);
+  // （気づきは外した。日またぎの印 crossMidnight は残っている＝上で見ている）
 });
 
 /* ── 打刻が片方だけ ─────────────────────────────────────────────── */
@@ -132,7 +141,7 @@ T('★出勤だけで退勤が無い日は 0分にして「打刻が片方だけ
   const s = run([P('2026-08-03T09:00', 'in')]);
   const d = D1(s);
   eq(d.workMin, 0); ok(d.incomplete);
-  eq(s.warnings.filter((w) => w.code === 'missing_punch').length, 1);
+  // （気づきは外した。打刻が片方だけの印 incomplete は残っている＝上で見ている）
 });
 T('★退勤だけ（出勤が無い）でも黙って捨てない', () => {
   const s = run([P('2026-08-03T18:00', 'out')]);
@@ -176,22 +185,22 @@ T('★★法定休日を決めていない会社には 休日の割増を付け�
   eq(d.workMin, 600, '働いた時間そのものは消さない');
   eq(d.otMin, 120, 'ふつうの日として 8時間を超えた分が時間外');
   // ★既定では出さないが、中では常に数えている★
-  eq(s.warnings.filter((w) => w.code === 'holiday_not_set').length, 1);
+  // （気づきは外した。休日の割増が付かない事は上の holidayMin で見ている）
   // 決めた会社では その気づきは出ない
-  eq(run(ps, { holidayMode: 'dow', legalHolidayDow: 0 }).warnings.filter((w) => w.code === 'holiday_not_set').length, 0);
+
 });
 
 /* ── 法定休日の決め方4つ（労基法35条：毎週1日 または 4週4日） ──────── */
 T('★①決めていない … 休日の割増は付かない（勝手に曜日を決めない）', () => {
   const s = run([P('2026-08-09T09:00', 'in'), P('2026-08-09T19:00', 'out')], { holidayMode: 'none' });
   eq(s.month.holidayMin, 0);
-  eq(s.warnings.filter((w) => w.code === 'holiday_not_set').length, 1);
+  // （気づきは外した。休日の割増が付かない事は上の holidayMin で見ている）
 });
 
 T('★②曜日で決める（会社ぜんぶ同じ）', () => {
   const s = run([P('2026-08-09T09:00', 'in'), P('2026-08-09T19:00', 'out')], { holidayMode: 'dow', legalHolidayDow: 0 });
   eq(s.month.holidayMin, 600);
-  eq(s.warnings.filter((w) => w.code === 'holiday_not_set').length, 0);
+
 });
 
 T('★★③従業員ごとに曜日（会社は日・この人だけ火）★★', () => {
@@ -223,7 +232,7 @@ T('★★④4週4日制 … 4日が確保できなくなった日から先が休
   eq(hol[0], C.addDays('2026-08-03', 24), '★壊れ始める日が違う★: ' + hol[0]);
   eq(hol.length, 4, '★その日から先の4日が休日労働★: ' + hol.length);
   ok(s.month.holidayMin > 0, '休日労働が0');
-  eq(s.warnings.filter((w) => w.code === 'cycle_short').length, 1, '4週に4日足りない気づきが出ていない');
+  // （気づきは外した。休日労働になる事は上の holidayMin で見ている）
 });
 
 T('★④は起算日が無ければ何もしない（空のまま使わせない）', () => {
@@ -235,18 +244,11 @@ T('★④は起算日が無ければ何もしない（空のまま使わせな�
   const s = C.summarize({ ym: '2026-08', punches: ps, shifts: [], fixes: [],
     company: { holidayMode: 'w4d4', closeDay: 31 } });
   eq(s.month.holidayMin, 0, '起算日が無いのに休日を決めている');
-  eq(s.warnings.filter((w) => w.code === 'holiday_cycle_missing').length, 1);
+  // （気づきは外した。起算日が無ければ何もしない事は上で見ている）
 });
 
-T('★毎週1日の休みが無い週を数える（止めない。数えて出すだけ）', () => {
-  const ps = [];
-  for (let i = 0; i < 14; i++) {
-    const d = C.addDays('2026-08-02', i);   // 日曜起算で2週間 まるまる出勤
-    ps.push(P(d + 'T09:00', 'in'), P(d + 'T17:00', 'out'));
-  }
-  const s = C.summarize({ ym: '2026-08', punches: ps, shifts: [], fixes: [], company: { closeDay: 31 } });
-  eq(s.warnings.filter((w) => w.code === 'no_weekly_holiday').length, 2, '2週とも数えていない');
-});
+/* （「毎週1日の休みが無い週を数える」は ★気づきごと外した★（2026-08-15 司さんの決定）。
+    ★法定休日の判定そのもの★は上のテストで見ている＝この線は消えていない） */
 
 /* ── 割増の内訳（社長が説明できるように） ───────────────────────── */
 T('★★足し算が合う：総労働 ＝ 所定内 ＋ 所定超 ＋ 時間外 ＋ 休日★★', () => {
@@ -318,7 +320,7 @@ if (process.argv.includes('--self-test')) {
     eq(C.splitDay({ workMin: 450, nightMin: 0 }, false, 420).dayOtMin, 0, '★本物が所定超を残業にしている★');
   });
   S('③ 日またぎを翌日に割る作り物は 出勤日が0になる（本物は480）', () => {
-    const s = C.summarize({ ym: '2026-08', punches: [P('2026-08-03T22:00', 'in'), P('2026-08-04T06:00', 'out')], company: {} });
+    const s = run([P('2026-08-03T22:00', 'in'), P('2026-08-04T06:00', 'out')]);
     eq(s.days.find((d) => d.d === '2026-08-03').workMin, 480, '★本物が出勤日にまとめていない★');
     eq(s.days.find((d) => d.d === '2026-08-04').workMin, 0, '★本物が翌日に割っている★');
   });

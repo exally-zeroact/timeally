@@ -107,7 +107,13 @@
   }
   function addPerson(p) {
     return client().from('tc_pub').insert(p).select()
-      .then(function (r) { if (r.error) throw new Error(r.error.message); return (r.data || [])[0]; });
+      .then(function (r) {
+        /* ★倉庫が断った理由(code)を落とさない★
+           new Error(message) だけにすると ★23505（重なり）が分からなくなり★、
+           画面が「作れませんでした」としか言えない。 */
+        if (r.error) throw wrapError('tc_pub', r.error);
+        return (r.data || [])[0];
+      });
   }
   function updatePerson(token, patch) {
     return client().from('tc_pub').update(patch).eq('token', token).select()
@@ -182,13 +188,48 @@
           d: r.d, plannedMin: r.planned_min, dayKind: r.day_kind,
           plannedIn: r.planned_in ? String(r.planned_in).slice(0, 5) : null,
           plannedOut: r.planned_out ? String(r.planned_out).slice(0, 5) : null,
+          /* ★社長が直した休憩★（null なら 打刻 or 会社の既定を使う） */
+          breakMin: r.break_min == null ? null : Number(r.break_min),
+          breakBy: r.break_by || null,
+          breakAt: r.break_at || null,
         };
       });
     });
   }
   function saveShift(row) {
     return client().from('tc_shift').upsert(row, { onConflict: 'account_id,employee_id,d' }).select()
-      .then(function (r) { if (r.error) throw new Error(r.error.message); return (r.data || [])[0]; });
+      .then(function (r) { if (r.error) throw wrapError('tc_shift', r.error); return (r.data || [])[0]; });
+  }
+
+  /** ★その日の休憩を 社長が直す★（誰が・いつ を一緒に残す。null に戻すと 既定へ戻る） */
+  function saveDayBreak(accountId, employeeId, d, breakMin, byUid) {
+    return saveShift({
+      account_id: accountId, employee_id: employeeId, d: d,
+      break_min: breakMin, break_by: breakMin == null ? null : byUid,
+      break_at: breakMin == null ? null : new Date().toISOString(),
+    });
+  }
+
+  /* ── 締めの記録（★追記だけ★） ──────────────────────────────
+     ★update も delete も書かない★（倉庫の側でも渡していない）。
+     ここに「消す」を1本でも足したら、直しの跡が消える。 */
+  function listCloseLog(ym) {
+    return selectAll('tc_close', function (q) {
+      if (ym) q = q.eq('ym', ym);
+      return q.order('at');
+    });
+  }
+  /** ★入口の記録だけ（人ごと）★ … 締めの履歴と混ぜない */
+  function listPinLog() {
+    return selectAll('tc_close', function (q) {
+      return q.in('action', ['pin_set', 'pin_reissue']).order('at');
+    });
+  }
+
+  /** 記録を1行 足す。action は close / reopen / export / pin_reissue のどれか */
+  function addCloseLog(row) {
+    return client().from('tc_close').insert(row).select()
+      .then(function (r) { if (r.error) throw wrapError('tc_close', r.error); return (r.data || [])[0]; });
   }
 
   /* ── 従業員（anon）… ★RPC経由のみ★ ───────────────────────── */
@@ -200,9 +241,11 @@
   }
   var Emp = {
     auth: function (token, device) { return rpc('tc_auth', { p_token: token, p_device: device }); },
-    info: function (token) { return rpc('tc_pub_info', { p_token: token }); },
-    setPassword: function (token, init, pw) { return rpc('tc_set_password', { p_token: token, p_init: init, p_pw: pw }); },
-    verify: function (token, pw) { return rpc('tc_verify', { p_token: token, p_pw: pw }); },
+    /** d を渡すと ★その日が入る締めの状態★ を返す（省略すると今日） */
+    info: function (token, d) { return rpc('tc_pub_info', { p_token: token, p_d: d || null }); },
+    /* ★秘密は暗証番号1つだけ★（2026-08-15）。初回コードはもう受け取らない */
+    setPin: function (token, pin) { return rpc('tc_pin_set', { p_token: token, p_pin: pin }); },
+    verify: function (token, pin) { return rpc('tc_verify', { p_token: token, p_pw: pin }); },
     punch: function (token, device, pw, wallTime, kind, src) {
       return rpc('tc_punch_add', {
         p_token: token, p_device: device, p_pw: pw,
@@ -236,6 +279,7 @@
     listPeople: listPeople, addPerson: addPerson, updatePerson: updatePerson,
     loadPunches: loadPunches, addPunch: addPunch,
     listFixes: listFixes, approveFix: approveFix, rejectFix: rejectFix,
-    loadShifts: loadShifts, saveShift: saveShift,
+    loadShifts: loadShifts, saveShift: saveShift, saveDayBreak: saveDayBreak,
+    listCloseLog: listCloseLog, addCloseLog: addCloseLog, listPinLog: listPinLog,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

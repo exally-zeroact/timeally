@@ -25,6 +25,10 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SQL = fs.readFileSync(path.join(ROOT, 'supabase/schema.sql'), 'utf8');
 
 export const TABLES = ['tc_companies', 'tc_pub', 'tc_punch', 'tc_fix', 'tc_shift'];
+/* ★帳面（追記だけ）の棚★ … 直す/消す を渡さないので、上の5本とは検査の線が違う。
+   2026-08-15 に tc_close を1本だけ足した。理由＝確定/解除の「いつ・誰が・なぜ」を
+   残さないと、★どの数字を給与へ渡したのか 後で誰も言えない★（労基法109条と同じ考え方）。 */
+export const LOG_TABLES = ['tc_close'];
 
 /** 部屋の表の列を読む */
 export function columnsOf(sql, table) {
@@ -51,6 +55,7 @@ export function usedColumns(js) {
 let pass = 0, fail = 0;
 const T = (n, fn) => { try { fn(); pass++; console.log('  ✓ ' + n); } catch (e) { fail++; console.log('  ✗ ' + n + ' — ' + (e && e.message)); } };
 const ok = (v, m) => { if (!v) throw new Error(m || 'false'); };
+const eq = (a, b, m) => { if (a !== b) throw new Error((m ? m + ': ' : '') + 'expected ' + JSON.stringify(b) + ' got ' + JSON.stringify(a)); };
 
 if (process.argv.includes('--self-test')) {
   console.log('\n[schema-contract --self-test] わざと壊して赤になるか');
@@ -65,11 +70,17 @@ if (process.argv.includes('--self-test')) {
     ok(!/alter view public\.tc_punch set \(security_invoker = true\)/.test(broken), '作り物が壊れていない');
     ok(/alter view public\.tc_punch set \(security_invoker = true\)/.test(SQL), '★本物に alter が無い★');
   });
-  S('③ 表を6つ目に増やしたら赤', () => {
+  S('③ 表を1つ増やしたら赤（今は 5＋帳面1＝6本）', () => {
     const more = SQL + '\ncreate table if not exists timeally.tc_extra (id uuid);';
     const found = (more.match(/create table if not exists timeally\.(tc_[a-z_]+)/g) || []).length;
-    ok(found === 6, '作り物が増えていない');
-    ok((SQL.match(/create table if not exists timeally\.(tc_[a-z_]+)/g) || []).length === 5, '★本物の表の数が5でない★');
+    ok(found === 7, '作り物が増えていない');
+    ok((SQL.match(/create table if not exists timeally\.(tc_[a-z_]+)/g) || []).length === 6, '★本物の表の数が6でない★');
+  });
+  S('④ 帳面に「直す」決まりを足したら赤（追記だけが崩れる）', () => {
+    const more = SQL + '\ncreate policy own_tc_close_edit on timeally.tc_close for update using (true);';
+    ok(/create policy [a-z_]+ on timeally\.tc_close for (all|update|delete)/.test(more), '作り物が壊れていない');
+    ok(!/create policy [a-z_]+ on timeally\.tc_close for (all|update|delete)/.test(SQL),
+      '★本物の帳面に 直す/消す の決まりがある★');
   });
   console.log('\n[self-test] ' + sp + ' passed, ' + sf + ' failed');
   if (sf) process.exit(1);
@@ -77,11 +88,50 @@ if (process.argv.includes('--self-test')) {
 
 console.log('\n[設計図とコードの契約]');
 
-T('★表は5つだけ（増やさない）', () => {
+T('★表は5つ＋帳面1つだけ（増やさない）', () => {
   const found = (SQL.match(/create table if not exists timeally\.(tc_[a-z_]+)/g) || [])
     .map((s) => s.split('.')[1]);
-  ok(found.length === 5, '表の数が ' + found.length + '（' + found.join(', ') + '）');
-  TABLES.forEach((t) => ok(found.indexOf(t) >= 0, t + ' が無い'));
+  const want = TABLES.concat(LOG_TABLES);
+  eq(found.length, want.length, '表の数が ' + found.length + '（' + found.join(', ') + '）');
+  want.forEach((t) => ok(found.indexOf(t) >= 0, t + ' が無い'));
+  found.forEach((t) => ok(want.indexOf(t) >= 0, '★見覚えのない表 ' + t + ' が増えている★'));
+});
+
+T('★★同じ人を2行 作らせない（給与CSVが壊れる型を倉庫で止める）★★', () => {
+  /* ★employee_id と emp_no は別物★
+       employee_id … 機械が作る鍵（打刻・予定・締めが これで人を指す）→ ★空も重なりも許さない★
+       emp_no      … 人が打つ従業員番号（給与CSVに載る）→ ★空は許す・重なりは許さない★
+     「空を許す」の根拠は tests/vendor/kintai-csv.js を実際に読んだ結果（氏名が必須・番号は運ぶだけ）。 */
+  ok(/alter table timeally\.tc_pub add\s+constraint tc_pub_uniq_employee_id\s+unique \(account_id, employee_id\)/.test(SQL),
+    '★(account_id, employee_id) の一意が無い★');
+  ok(/constraint tc_pub_employee_id_not_blank\s+check \(length\(btrim\(employee_id\)\) > 0\)/.test(SQL),
+    '★空の鍵を止めていない★');
+  ok(/create unique index if not exists tc_pub_uniq_emp_no[\s\S]{0,200}?on timeally\.tc_pub \(account_id, emp_no\)/.test(SQL),
+    '★従業員番号(emp_no)の一意が無い★');
+  ok(/tc_pub_uniq_emp_no[\s\S]{0,200}?where emp_no is not null and btrim\(emp_no\) <> ''/.test(SQL),
+    '★emp_no の一意に「空は除く」が無い（番号を使わない会社が1人しか作れなくなる）★');
+  /* ★付け外しできる形で書く★（2回当てても落ちない） */
+  ok(/drop constraint if exists tc_pub_uniq_employee_id/.test(SQL), '2回当てると落ちる書き方');
+});
+
+T('★★帳面(tc_close)は 追記だけ＝直す/消す の決まりを作らない★★', () => {
+  LOG_TABLES.forEach((t) => {
+    ok(new RegExp('alter table timeally\\.' + t + ' enable row level security').test(SQL), t + ' に RLS が無い');
+    ok(new RegExp('create policy own_' + t + '_read on timeally\\.' + t + ' for select').test(SQL), t + ' の読む決まりが無い');
+    ok(new RegExp('create policy own_' + t + '_add on timeally\\.' + t + ' for insert').test(SQL), t + ' の足す決まりが無い');
+    /* ★for all / for update / for delete があったら赤★（1行でも書き換えられたら跡が消える） */
+    ok(!new RegExp('create policy [a-z_]+ on timeally\\.' + t + ' for (all|update|delete)').test(SQL),
+      '★' + t + ' に 直す/消す の決まりがある（追記だけが崩れる）★');
+    ok(!new RegExp('grant[^;]*(update|delete)[^;]*on (public|timeally)\\.' + t).test(SQL),
+      '★' + t + ' に update/delete の権限を渡している★');
+    ok(new RegExp('grant select, insert\\s+on public\\.' + t + ' to authenticated').test(SQL), t + ' の窓に権限が無い');
+    ok(new RegExp('grant select, insert\\s+on timeally\\.' + t + '\\s+to authenticated').test(SQL), t + ' の実の棚に権限が無い');
+    ok(new RegExp('create or replace view public\\.' + t + ' with \\(security_invoker = true\\)').test(SQL), t + ' の窓に with が無い');
+    ok(new RegExp('alter view public\\.' + t + ' set \\(security_invoker = true\\)').test(SQL), t + ' の窓に alter が無い');
+  });
+  /* ★解除の理由は倉庫でも要る★（画面のチェックだけだと 直に叩けば空で入る） */
+  ok(/check \(action <> 'reopen' or length\(btrim\(reason\)\) >= 2\)/.test(SQL),
+    '★解除の理由を倉庫で強制していない★');
 });
 
 T('★全部の表に RLS がある（本人の行だけ）', () => {
@@ -121,7 +171,7 @@ T('★コードが読む列が 全部 表にある（窓に無い列を読むと
   const js = fs.readFileSync(path.join(ROOT, 'js/tc-db.js'), 'utf8')
     + fs.readFileSync(path.join(ROOT, 'js/owner-app.js'), 'utf8');
   const all = new Set();
-  TABLES.forEach((t) => (columnsOf(SQL, t) || []).forEach((c) => all.add(c)));
+  TABLES.concat(LOG_TABLES).forEach((t) => (columnsOf(SQL, t) || []).forEach((c) => all.add(c)));
   const used = usedColumns(js);
   const missing = used.filter((c) => !all.has(c) && c !== 'ascending');
   ok(missing.length === 0, '表に無い列を読んでいる: ' + missing.join(', '));
@@ -136,6 +186,51 @@ T('★upsert の onConflict が 実在する一意制約と合っている', () 
   if (/onConflict:\s*'account_id,employee_id,d'/.test(js)) {
     ok(/unique \(account_id, employee_id, d\)/.test(SQL), 'tc_shift に (account_id, employee_id, d) の一意制約が無い');
   }
+});
+
+/* ★関数の数を固定する（指示役 2026-08-15）★
+   security definer の関数は ★決まり(RLS)を素通りできる★ので、
+   ★1本 増えたら必ず気づく★形にしておく。
+   実測（本番倉庫 2026-08-15）:
+     public   … 7本 すべて definer=true（従業員(anon)に開いている入口）
+     timeally … tc_ok 1本だけ definer=false
+   ★tc_ok は RLS から呼ぶ物ではない★。
+   ★RPC 3本（tc_punch_add / tc_my_punches / tc_fix_request）の中から呼ぶ★
+   「端末記憶 or 暗証番号が合っているか」を ★1か所で確かめる★ための補助。
+   部屋(timeally)の中なので PostgREST からは呼べない・anon にも渡していない。 */
+/* 2026-08-15 tc_set_password → ★tc_pin_set★ に作り直した（初回コードを無くし、暗証番号1つに） */
+export const PUBLIC_RPCS = ['tc_auth', 'tc_fix_request', 'tc_my_punches', 'tc_pin_set',
+  'tc_pub_info', 'tc_punch_add', 'tc_verify'];
+/* 部屋の中の補助（★definer にしない★＝決まりを素通りできない）
+   tc_ok        … 端末記憶 or 暗証番号（RPC 3本から呼ぶ）
+   tc_period_ym … その日が どの締めに入るか（2026-08-15）
+   tc_state     … 受付中/締め待ち/確定（2026-08-15・★画面と同じ線を倉庫でも引く★） */
+export const INNER_FUNCS = ['tc_ok', 'tc_period_ym', 'tc_state'];
+
+T('★★関数は10本（public 7本＝全部 definer / 部屋の中 3本＝1つも definer でない）★★', () => {
+  const pub = (SQL.match(/create or replace function public\.(tc_[a-z_]+)/g) || [])
+    .map((s) => s.split('.')[1]).sort();
+  const inner = (SQL.match(/create or replace function timeally\.(tc_[a-z_]+)/g) || [])
+    .map((s) => s.split('.')[1]).sort();
+  eq(pub.join(','), PUBLIC_RPCS.join(','), '★public の関数が増減している★: ' + pub.join(','));
+  eq(inner.join(','), INNER_FUNCS.slice().sort().join(','), '★部屋の中の関数が増減している★: ' + inner.join(','));
+  eq(pub.length + inner.length, 10, '関数の合計が10本でない');
+
+  /* ★definer かどうかを1本ずつ見る★（definer は決まりを素通りできる） */
+  const bodies = SQL.split('create or replace function ').slice(1);
+  bodies.forEach(function (b) {
+    const name = (b.match(/^(public|timeally)\.(tc_[a-z_]+)/) || [])[0] || '?';
+    const isDefiner = /security definer/.test(b.split('$$')[0]);
+    if (name.indexOf('public.') === 0) ok(isDefiner, name + ' が definer でない（anonから呼べない）');
+    else ok(!isDefiner, '★' + name + ' が definer になっている（決まりを素通りできてしまう）★');
+  });
+
+  /* ★tc_ok は RLS ではなく RPC の中から呼ばれている★（呼び元を数える） */
+  const calls = (SQL.match(/timeally\.tc_ok\(/g) || []).length - 1;   // 定義の1回を引く
+  eq(calls, 3, 'tc_ok の呼び元が ' + calls + '箇所（3本のRPCのはず）');
+  ok(!/create policy[\s\S]{0,300}tc_ok/.test(SQL), '★tc_ok を決まり(RLS)から呼んでいる★');
+  console.log('     実測: public ' + pub.length + '本(全部definer) / 部屋の中 ' + inner.length
+    + '本(definerでない) / tc_ok の呼び元 ' + calls + 'か所（RPCの中）');
 });
 
 T('★従業員向けRPCの search_path に extensions がある（crypt が解決できないと落ちる）', () => {
@@ -155,11 +250,15 @@ T('★打刻の原本を消す道が無い（出勤簿は法定三帳簿・5年 
   ok(!rpcs.some((f) => /\bdelete\s+from\b/i.test(f)), '★従業員が呼べるRPCに delete がある★');
 });
 
-T('★暗証番号は平文で持たない・8文字以上・5回で15分ロック（サーバ側で強制）', () => {
-  ok(/crypt\(p_pw, gen_salt\('bf'\)\)/.test(SQL), 'bcrypt で保存していない');
+T('★暗証番号は平文で持たない・数字4〜6桁・5回で15分ロック（サーバ側で強制）', () => {
+  ok(/crypt\(p_pin, gen_salt\('bf'\)\)/.test(SQL), 'bcrypt で保存していない');
   ok(!/pw\s+text\s*,?\s*--.*平文/.test(SQL), '平文の列がある');
-  ok(/length\(coalesce\(p_pw,''\)\) < 8/.test(SQL), '★8文字未満をサーバが弾いていない★');
+  ok(/p_pin !~ '\^\[0-9\]\{4,6\}\$'/.test(SQL), '★桁をサーバが弾いていない★');
   ok(/fail_count\+1 >= 5/.test(SQL) && /interval '15 minutes'/.test(SQL), '5回で15分ロックが無い');
+  /* ★「最初のあいことば」の口が生き残っていないか★（古い形は落とす） */
+  ok(/drop function if exists public\.tc_set_password\(uuid,text,text\)/.test(SQL),
+    '★古い tc_set_password を落としていない（初回コードの口が生き続ける）★');
+  ok(!/p_init/.test(SQL), '★まだ初回コードを受け取る所がある★');
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

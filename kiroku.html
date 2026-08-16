@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
     <meta name="format-detection" content="telephone=no" />
     <title>Timeally — 自分の記録</title>
-    <link rel="icon" href="icons/favicon-32.png?v=72b02d1d" sizes="32x32" />
-    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=72b02d1d" />
+    <link rel="icon" href="icons/favicon-32.png?v=13dbbd8b" sizes="32x32" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=13dbbd8b" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Timeally" />
@@ -14,7 +14,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="css/timeally.css?v=72b02d1d" />
+    <link rel="stylesheet" href="css/timeally.css?v=13dbbd8b" />
   </head>
   <body>
     <div class="tc-appbar">
@@ -25,6 +25,9 @@
 
     <div class="tc-wrap" id="main" hidden>
       <div class="tc-note">あなたが打った時刻を、そのまま並べています。</div>
+
+      <!-- ★締め切りの知らせ★ 打った時刻は締め切った後も そのまま見えたまま -->
+      <div class="tc-alert" id="closed-note" hidden></div>
 
       <div class="tc-tabs">
         <button class="tc-btn sub" id="b-prev" type="button">前の月</button>
@@ -62,20 +65,32 @@
 
     <div class="tc-overlay" id="gate">
       <div class="tc-panel">
-        <h2>あいことば</h2>
+        <h2 id="gate-title">暗証番号</h2>
+        <div class="tc-note" id="gate-note" hidden></div>
         <div id="gate-alert" class="tc-alert" hidden></div>
-        <label for="pw">あなたのあいことば</label>
-        <input type="password" id="pw" autocomplete="current-password" />
-        <p><button class="tc-btn wide" id="b-verify" type="button">入る</button></p>
+
+        <!-- ★まだ暗証番号を決めていない人★
+             ここに2つ目の入口は作らない（★入口が2つあると 片方だけ直す事故が必ず起きる★）。
+             決める場所は打つ画面の1か所だけ。★?t= を落とさずに渡し、決め終わったらここへ戻す★ -->
+        <div id="gate-first" hidden>
+          <p><a class="tc-btn wide" id="to-setpw" href="#">暗証番号を決める（打つ画面へ）</a></p>
+        </div>
+
+        <div id="gate-again">
+          <label for="pin">暗証番号</label>
+          <input type="password" id="pin" inputmode="numeric" autocomplete="current-password" maxlength="6" />
+          <p><button class="tc-btn wide" id="b-verify" type="button">入る</button></p>
+        </div>
       </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="js/supa-config.js?v=72b02d1d"></script>
-    <script src="js/env-badge.js?v=72b02d1d"></script>
-    <script src="js/tc-ui.js?v=72b02d1d"></script>
-    <script src="js/tc-db.js?v=72b02d1d"></script>
-    <script src="js/emp-app.js?v=72b02d1d"></script>
+    <script src="js/supa-config.js?v=13dbbd8b"></script>
+    <script src="js/env-badge.js?v=13dbbd8b"></script>
+    <script src="lib/tc-pin.js?v=13dbbd8b"></script>
+    <script src="js/tc-ui.js?v=13dbbd8b"></script>
+    <script src="js/tc-db.js?v=13dbbd8b"></script>
+    <script src="js/emp-app.js?v=13dbbd8b"></script>
     <script>
       EmpApp.startKiroku();
     </script>

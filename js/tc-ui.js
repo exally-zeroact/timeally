@@ -79,6 +79,12 @@
    * @param {string} title 窓の題（＝紙の名前）
    * @param {string} bodyHtml 紙の中身。★空なら開かない（白紙のダイアログを出さない）★
    */
+  /** ★紙の余白は いつでも四辺20mm★（2026-08-15 司さんの決定）
+      ・★勤務表は必ず綴じる紙★なので「綴じる／綴じない」を選ばせない（★設定を1つ減らす★）
+      ・★四辺が同じ★なので 上でも左でも右でも ★2穴（端から約12mm）が余白に入る★
+      ・★決めるのは ここ1か所だけ★（画面にも倉庫にも持たせない） */
+  var PAGE_MARGIN_MM = 20;
+
   function printPaper(title, bodyHtml) {
     var body = String(bodyHtml || '').trim();
     if (!body) { toast('刷る中身がありません（先に対象を選んでください）'); return false; }
@@ -89,14 +95,45 @@
       '<!doctype html><html lang="ja"><head><meta charset="utf-8">'
       + '<meta name="viewport" content="width=device-width,initial-scale=1">'
       + '<title>' + esc(title) + '</title><style>'
-      + "body{font-family:'Noto Sans JP',system-ui,sans-serif;color:#2B2418;margin:12mm;font-size:11px;}"
-      + 'h1{font-size:15px;color:#8F6200;margin:0 0 6px;}'
-      + '.sub{font-size:11px;color:#78705C;margin:0 0 10px;display:block;'
+      /* ★余白は @page だけ★（body にも margin を書くと ★二重になる★。
+         2026-08-15 実測: 片側22mm（10+12）で 31日ぶんが ★3枚★ になっていた） */
+      /* ★行の高さも詰める★（1行19px→約15px。31日＋見出しで 約120px 減る） */
+      + "body{font-family:'Noto Sans JP',system-ui,sans-serif;color:#2B2418;margin:0;font-size:10px;line-height:1.25;}"
+      /* ★紙の頭は1行★（会社名の後ろに 氏名・期間・状態・出した日を並べる） */
+      + 'h1{font-size:13px;color:#8F6200;margin:0 0 3px;}'
+      + '.sub{font-size:10px;color:#78705C;font-weight:400;margin-left:8px;'
       + 'white-space:normal;word-break:normal;overflow-wrap:break-word;}'
       + 'table{border-collapse:collapse;width:100%;}'
-      + 'th,td{border:1px solid #F0E0B8;padding:3px 5px;text-align:right;white-space:nowrap;}'
-      + 'th{background:#FFE08A;}td.l,th.l{text-align:left;}td.warn{color:#B3261E;}'
-      + '@page{size:A4 landscape;margin:10mm;}'
+      /* ★白黒コピーで読めるようにする★（薄い黄の罫線はコピーでほぼ飛ぶ）
+         ＝ ★色ではなく濃さで作る★。見出しは背景ではなく ★太字＋下の太い線★で分ける。 */
+      + 'th,td{border:1px solid #999999;padding:1px 4px;text-align:right;white-space:nowrap;}'
+      + 'th{background:none;font-weight:700;}'
+      /* ★太線は見出しの一番下の行だけ★（月計の各行に出ると うるさい） */
+      + 'thead tr:last-child th{border-bottom:2px solid #333333;}'
+      /* ★1段目（何の仲間か）は 中央に置いて 細い線で区切る★ */
+      + 'thead tr:first-child th.grp{font-size:9px;}'
+      /* ★土日と法定休日は薄い網★（★コピーで飛ばない濃さ★） */
+      + 'tr.rest td{background:#EEEEEE;}'
+      /* ★一番下の合計行★（月計と突き合わせられる） */
+      + 'tfoot th,tfoot td{border-top:2px solid #333333;font-weight:700;}'
+      /* ★長い備考で列が押し出されないようにする★（はみ出す分は切る＝表は崩さない） */
+      + 'table{table-layout:fixed;}td.l{overflow:hidden;text-overflow:ellipsis;}'
+      /* ★揃えの決まり（全アプリ共通）★ 数字＝右（既定）／言葉＝左(.l)／1文字の列＝中央(.c)
+         ★見出しは中身と同じ揃え★（同じ class が付く）。またがる見出し(.grp)だけ中央 */
+      + 'td.l,th.l{text-align:left;}td.c,th.c{text-align:center;}th.grp{text-align:center;}'
+      /* ★数字は等幅★（1と8で幅が変わらない＝桁が縦に揃う） */
+      + 'td.num,th.num{font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,Consolas,monospace;}'
+      + 'td.warn{color:#B3261E;}'
+      /* ★2枚になった時は 見出しを2枚目にも出す／1行を2枚に割らない★ */
+      + 'thead{display:table-header-group;}tr{break-inside:avoid;page-break-inside:avoid;}'
+      /* ★月計は横に並べる★（縦12行だと それだけで紙の1/3を使う） */
+      + '.paper-sum{display:flex;gap:12px;align-items:flex-start;margin-top:6px;}'
+      + '.paper-sum table{width:auto;}'
+      + '.paper-foot{display:block;margin-top:6px;font-size:9px;color:#78705C;}'
+      /* ★綴じ代★ 2穴パンチの中心は ★紙の端からおよそ12mm★。
+         ★四辺とも20mm★なら どこに開けても 穴が余白に入る。
+         ★プリンタの拡大縮小で余白が変わる★ので、刷る画面に「実際のサイズ（100%）で」と出している。 */
+      + '@page{size:A4 landscape;margin:' + PAGE_MARGIN_MM + 'mm;}'
       + '</style></head><body>' + body + '</body></html>'
     );
     w.document.close();
@@ -121,7 +158,7 @@
   }
 
   global.TcUi = {
-    esc: esc, toast: toast,
+    esc: esc, toast: toast, PAGE_MARGIN_MM: PAGE_MARGIN_MM,
     mdShort: mdShort, dateField: dateField, onDateChange: onDateChange,
     hm: hm, minToHm: minToHm, dowOf: dowOf, DOW: DOW,
     printPaper: printPaper, deliverText: deliverText, nameHint: nameHint,

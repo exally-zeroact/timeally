@@ -4,24 +4,24 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
     <title>Timeally — 集計・印刷</title>
-    <link rel="icon" href="icons/favicon-32.png?v=72b02d1d" sizes="32x32" />
-    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=72b02d1d" />
+    <link rel="icon" href="icons/favicon-32.png?v=13dbbd8b" sizes="32x32" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=13dbbd8b" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Timeally" />
     <meta name="theme-color" content="#FFC72C" />
-    <link rel="manifest" href="manifest.json?v=72b02d1d" />
+    <link rel="manifest" href="manifest.json?v=13dbbd8b" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="css/timeally.css?v=72b02d1d" />
+    <link rel="stylesheet" href="css/timeally.css?v=13dbbd8b" />
   </head>
   <body>
     <div class="tc-appbar">
       <h1>Timeally</h1>
       <span class="tc-sub">集計・印刷</span>
       <span class="tc-spacer"></span>
-      <a class="tc-btn sub" href="index.html?v=72b02d1d">一覧へ</a>
+      <a class="tc-btn sub" href="index.html?v=13dbbd8b">一覧へ</a>
     </div>
 
     <div class="tc-wrap" id="main" hidden>
@@ -33,38 +33,81 @@
       </div>
 
       <div class="tc-note" id="period"></div>
+
+      <!-- ★締め（受付中／締め待ち／確定）★
+           押せるか・なぜ押せないかは js/owner-app.js が lib/tc-close.js から
+           ★1か所で受け取って★ここへ書く（画面ごとに判定を書かない） -->
+      <div class="tc-closebox" id="closebox" hidden>
+        <div class="tc-closehead">
+          <span class="tc-state" id="cstate">受付中</span>
+          <span class="tc-when" id="cwhen"></span>
+          <span class="tc-spacer"></span>
+          <button class="tc-btn" id="b-close" type="button">この月を確定する</button>
+          <button class="tc-btn sub" id="b-reopen" type="button">確定を解除する</button>
+        </div>
+        <span class="tc-why" id="cwhy"></span>
+        <div id="cpanel" hidden>
+          <label for="creason" style="display: block; margin-top: 8px; font-size: 13px">理由（記録に残ります）</label>
+          <input id="creason" type="text" maxlength="120" placeholder="例: 打刻漏れが見つかったため" />
+          <div class="tc-askrow">
+            <button class="tc-btn" id="b-do" type="button">記録して実行</button>
+            <button class="tc-btn sub" id="b-cancel" type="button">やめる</button>
+          </div>
+        </div>
+        <span class="tc-hist" id="chist"></span>
+      </div>
+
       <div class="tc-alert" id="cutbox" hidden></div>
 
       <h2>日ごと</h2>
       <div class="tc-tablewrap"><table class="tc" id="daily"></table></div>
 
+      <!-- ★休憩は押させず 会社の既定を引く★（2026-08-15 司さんの指摘）。
+           ただし ★本当に休憩が取れなかった日★は在るので、社長が日ごとに直せる。
+           ★打たせず 押させる★（現場の数字は 0/30/45/60/90 でほぼ足りる）。 -->
+      <h2>休憩を直す</h2>
+      <div class="tc-note" id="brknote"></div>
+      <div class="tc-tabs">
+        <select id="brk-day" style="width: auto; min-width: 150px"></select>
+        <button class="tc-btn sub" type="button" data-bm="0">0分</button>
+        <button class="tc-btn sub" type="button" data-bm="30">30分</button>
+        <button class="tc-btn sub" type="button" data-bm="45">45分</button>
+        <button class="tc-btn sub" type="button" data-bm="60">60分</button>
+        <button class="tc-btn sub" type="button" data-bm="90">90分</button>
+        <button class="tc-btn sub" type="button" data-bm="">既定にもどす</button>
+      </div>
+      <div class="tc-note" id="brkfixed" hidden></div>
+
       <h2>月計</h2>
       <div class="tc-tablewrap"><table class="tc" id="total"></table></div>
 
-      <h2>気づき</h2>
-      <div id="warns"></div>
-
       <h2>渡す</h2>
+      <!-- ★押す直前に読める所に置く★（プリンタの拡大縮小で余白が変わるため・会社情報から移した） -->
+      <div class="tc-note">
+        刷るときは「実際のサイズ（100%）」で刷ってください。紙の余白は四辺とも20mmです。
+      </div>
       <div class="tc-note" id="namehint"></div>
       <div class="tc-tabs">
-        <button class="tc-btn" id="b-print" type="button">印刷</button>
+        <button class="tc-btn" id="b-print" type="button">印刷（この人）</button>
+        <button class="tc-btn" id="b-printall" type="button">印刷（全員）</button>
         <button class="tc-btn sub" id="b-csv" type="button">この人の日ごと（CSV）</button>
         <button class="tc-btn sub" id="b-kyuyo" type="button">給与へ渡す（全員・CSV）</button>
         <button class="tc-btn sub" id="b-xlsx" type="button">Excel（全員）</button>
       </div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="js/supa-config.js?v=72b02d1d"></script>
-    <script src="js/env-badge.js?v=72b02d1d"></script>
-    <script src="lib/tc-law.js?v=72b02d1d"></script>
-    <script src="lib/tc-calc.js?v=72b02d1d"></script>
-    <script src="lib/tc-csv.js?v=72b02d1d"></script>
-    <script src="lib/tc-name.js?v=72b02d1d"></script>
-    <script src="lib/tc-hours.js?v=72b02d1d"></script>
-    <script src="js/file-out.js?v=72b02d1d"></script>
-    <script src="js/tc-ui.js?v=72b02d1d"></script>
-    <script src="js/tc-db.js?v=72b02d1d"></script>
-    <script src="js/owner-app.js?v=72b02d1d"></script>
+    <script src="js/supa-config.js?v=13dbbd8b"></script>
+    <script src="js/env-badge.js?v=13dbbd8b"></script>
+    <script src="lib/tc-law.js?v=13dbbd8b"></script>
+    <script src="lib/tc-calc.js?v=13dbbd8b"></script>
+    <script src="lib/tc-close.js?v=13dbbd8b"></script>
+    <script src="lib/tc-csv.js?v=13dbbd8b"></script>
+    <script src="lib/tc-name.js?v=13dbbd8b"></script>
+    <script src="lib/tc-hours.js?v=13dbbd8b"></script>
+    <script src="js/file-out.js?v=13dbbd8b"></script>
+    <script src="js/tc-ui.js?v=13dbbd8b"></script>
+    <script src="js/tc-db.js?v=13dbbd8b"></script>
+    <script src="js/owner-app.js?v=13dbbd8b"></script>
     <script>
       OwnerApp.startShukei();
     </script>

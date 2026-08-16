@@ -55,12 +55,26 @@ jobs:
         run: node tests/tc-hours.test.mjs
       - name: ★時間で入れて分で持つ (「8時間30分」を830時間にする作り物で赤になるかの自己確認)
         run: node tests/tc-hours.test.mjs --self-test
+      - name: ★締め (受付中/締め待ち/確定・締め日20と31と30の端・日またぎ・★締めた月の合計＝日ごとの合計★)
+        run: node tests/tc-close.test.mjs
+      - name: ★締め (締め待ちを飛ばす/解除後もCSVを出す作り物で赤になるかの自己確認)
+        run: node tests/tc-close.test.mjs --self-test
 
       # ── 給与への出口（繋ぐ前に合格条件を確かめる） ─────────────────
       - name: ★給与への受け口 (出したCSVを kintai-csv.js に実際に食わせる)
         run: node tests/tc-csv.test.mjs
       - name: ★給与への受け口 (見出しを変える/小数時にする/BOMを外すと赤になるかの自己確認)
         run: node tests/tc-csv.test.mjs --self-test
+
+      - name: ★休憩 (押させず既定を引く・拘束6時間ちょうど/1分の端・打刻が在る日は動かない・法定割れは赤で知らせる)
+        run: node tests/break.test.mjs
+      - name: ★休憩 (既定を引かない/打刻を上書きする/黙って法定へ引き上げる作り物で赤になるかの自己確認)
+        run: node tests/break.test.mjs --self-test
+
+      - name: ★暗証番号 (秘密は1つだけ・数字4〜6桁・1111を止めない・全角も通す・倉庫と画面が同じ線)
+        run: node tests/pin.test.mjs
+      - name: ★暗証番号 (8文字以上に戻す/1111を禁止する作り物で赤になるかの自己確認)
+        run: node tests/pin.test.mjs --self-test
 
       # ── 従業員に嘘の数字を見せない ────────────────────────────────
       - name: ★従業員の画面 (数えた結果が1語も出ていない・数える道具を読まない・RPCが時刻しか返さない)
