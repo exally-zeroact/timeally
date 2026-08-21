@@ -4,35 +4,39 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
     <title>Timeally — 集計・印刷</title>
-    <link rel="icon" href="icons/favicon-32.png?v=13dbbd8b" sizes="32x32" />
-    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=13dbbd8b" />
+    <link rel="icon" href="icons/favicon-32.png?v=05df1d9a" sizes="32x32" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=05df1d9a" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Timeally" />
     <meta name="theme-color" content="#FFC72C" />
-    <link rel="manifest" href="manifest.json?v=13dbbd8b" />
+    <link rel="manifest" href="manifest.json?v=05df1d9a" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="css/timeally.css?v=13dbbd8b" />
+    <link rel="stylesheet" href="css/timeally.css?v=05df1d9a" />
   </head>
   <body>
     <div class="tc-appbar">
       <h1>Timeally</h1>
       <span class="tc-sub">集計・印刷</span>
       <span class="tc-spacer"></span>
-      <a class="tc-btn sub" href="index.html?v=13dbbd8b">一覧へ</a>
+      <!-- ★別のページへ移る物は いつでも 帯のいちばん右★（置き場所は1つ・2026-08-16） -->
+      <a class="tc-btn sub tc-nav" href="index.html?v=05df1d9a">← 今月の勤務へ</a>
     </div>
 
     <div class="tc-wrap" id="main" hidden>
       <div class="tc-tabs">
-        <button class="tc-btn sub" id="b-prev" type="button">前の月</button>
+        <!-- ★「月」ではなく「締め」★（締め日が末日でない会社では 月ではないため・2026-08-17） -->
+        <button class="tc-btn sub" id="b-prev" type="button">前の締め</button>
         <span class="tc-btn sub" id="ymlabel" style="pointer-events: none"></span>
-        <button class="tc-btn sub" id="b-next" type="button">次の月</button>
+        <button class="tc-btn sub" id="b-next" type="button">次の締め</button>
         <select id="who" style="width: auto; min-width: 160px"></select>
       </div>
 
       <div class="tc-note" id="period"></div>
+      <!-- ★存在しない締め日（29・30・31）の扱いを 画面に書いておく★（黙って寄せない） -->
+      <div class="tc-note">その月に締め日が無い時は 末日を締め日にします（例: 締め日30 の2月は 2/28、うるう年は 2/29）。</div>
 
       <!-- ★締め（受付中／締め待ち／確定）★
            押せるか・なぜ押せないかは js/owner-app.js が lib/tc-close.js から
@@ -60,7 +64,21 @@
       <div class="tc-alert" id="cutbox" hidden></div>
 
       <h2>日ごと</h2>
-      <div class="tc-tablewrap"><table class="tc" id="daily"></table></div>
+      <!-- ★決められない日は 数える前に言う★（2026-08-18 指示役）
+           ＝同じ時刻に出勤と退勤が並んだ日は ★0にして黙らない★。
+           ★中身が空なら 箱ごと出さない★（[hidden] が効く形にしてある）。 -->
+      <div class="tc-alert" id="undecided" hidden></div>
+      <!-- ★狭い画面＝カレンダー／広い画面＝17列の表★（2026-08-17 司さんの決定）
+           ★列は1つも省きません★＝日を押すと その日の17項目が全部 出ます（畳んでいるだけ）。
+           ★カレンダーは締め期間★＝締め日の翌日から 締め日まで（締め日が いつも最後のマス）。 -->
+      <div class="tc-cal" id="cal"></div>
+      <p class="tc-scrollhint">
+        日を押すと、その日の全部が下に出ます。どの列も見られます／その日に無い物は出しません。<br />
+        ？＝打刻が片方だけ／決められない（直すまで数字が出ません）　有＝有給　欠＝欠勤　−＝打刻なし　締＝締め日<br />
+        濃い網＝法定休日（休日の割増が付く日）　薄い網＝土日
+      </p>
+      <div class="tc-daybox" id="cal-day" hidden></div>
+      <div class="tc-tablewrap" id="daily-wrap"><table class="tc" id="daily"></table></div>
 
       <!-- ★休憩は押させず 会社の既定を引く★（2026-08-15 司さんの指摘）。
            ただし ★本当に休憩が取れなかった日★は在るので、社長が日ごとに直せる。
@@ -88,6 +106,9 @@
       </div>
       <div class="tc-note" id="namehint"></div>
       <div class="tc-tabs">
+        <!-- ★刷る前に「紙のとおり」を見る★（2026-08-16 司さん）
+             ＝★刷る物と同じ物★を A4横のまま出す。指で広げて 端の列まで読める。 -->
+        <button class="tc-btn" id="b-preview" type="button">紙のとおりに見る</button>
         <button class="tc-btn" id="b-print" type="button">印刷（この人）</button>
         <button class="tc-btn" id="b-printall" type="button">印刷（全員）</button>
         <button class="tc-btn sub" id="b-csv" type="button">この人の日ごと（CSV）</button>
@@ -96,18 +117,22 @@
       </div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="js/supa-config.js?v=13dbbd8b"></script>
-    <script src="js/env-badge.js?v=13dbbd8b"></script>
-    <script src="lib/tc-law.js?v=13dbbd8b"></script>
-    <script src="lib/tc-calc.js?v=13dbbd8b"></script>
-    <script src="lib/tc-close.js?v=13dbbd8b"></script>
-    <script src="lib/tc-csv.js?v=13dbbd8b"></script>
-    <script src="lib/tc-name.js?v=13dbbd8b"></script>
-    <script src="lib/tc-hours.js?v=13dbbd8b"></script>
-    <script src="js/file-out.js?v=13dbbd8b"></script>
-    <script src="js/tc-ui.js?v=13dbbd8b"></script>
-    <script src="js/tc-db.js?v=13dbbd8b"></script>
-    <script src="js/owner-app.js?v=13dbbd8b"></script>
+    <script src="js/supa-config.js?v=05df1d9a"></script>
+    <script src="js/env-badge.js?v=05df1d9a"></script>
+    <script src="lib/tc-yukyu.js?v=05df1d9a"></script>
+    <script src="lib/tc-law.js?v=05df1d9a"></script>
+    <!-- ★tc-calc より先に読む★（打った物の掃除＝連打をまとめる／決められない日を見つける。
+         tc-calc.js は これが無いと数えられない） -->
+    <script src="lib/tc-clean.js?v=05df1d9a"></script>
+    <script src="lib/tc-calc.js?v=05df1d9a"></script>
+    <script src="lib/tc-close.js?v=05df1d9a"></script>
+    <script src="lib/tc-csv.js?v=05df1d9a"></script>
+    <script src="lib/tc-name.js?v=05df1d9a"></script>
+    <script src="lib/tc-hours.js?v=05df1d9a"></script>
+    <script src="js/file-out.js?v=05df1d9a"></script>
+    <script src="js/tc-ui.js?v=05df1d9a"></script>
+    <script src="js/tc-db.js?v=05df1d9a"></script>
+    <script src="js/owner-app.js?v=05df1d9a"></script>
     <script>
       OwnerApp.startShukei();
     </script>

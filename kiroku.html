@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
     <meta name="format-detection" content="telephone=no" />
     <title>Timeally — 自分の記録</title>
-    <link rel="icon" href="icons/favicon-32.png?v=13dbbd8b" sizes="32x32" />
-    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=13dbbd8b" />
+    <link rel="icon" href="icons/favicon-32.png?v=05df1d9a" sizes="32x32" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=05df1d9a" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Timeally" />
@@ -14,20 +14,30 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="css/timeally.css?v=13dbbd8b" />
+    <link rel="stylesheet" href="css/timeally.css?v=05df1d9a" />
   </head>
   <body>
     <div class="tc-appbar">
       <h1>Timeally</h1>
       <span class="tc-spacer"></span>
       <span class="tc-sub" id="who"></span>
+      <!-- ★別のページへ移る物は いつでも 帯のいちばん右★（全画面で同じ場所・2026-08-16） -->
+      <a class="tc-btn sub tc-nav" id="to-punch" href="#">← 打つ画面へ</a>
     </div>
 
     <div class="tc-wrap" id="main" hidden>
-      <div class="tc-note">あなたが打った時刻を、そのまま並べています。</div>
+      <!-- ★説明は1行★（2026-08-18 夜 司さん「複雑すぎんか？」）
+           ＝画面が やっている事は 見れば分かる。★3行の説明は 打刻2日ぶんの高さ★を食う。 -->
+      <div class="tc-note">
+        あなたが打った時刻です。直したい所は 押してください。
+      </div>
 
       <!-- ★締め切りの知らせ★ 打った時刻は締め切った後も そのまま見えたまま -->
       <div class="tc-alert" id="closed-note" hidden></div>
+
+      <!-- ★有給の残りを 出すだけ★（2026-08-19・付けるのは社長）
+           ＝★1行だけ★。ここに押す物は置かない（増やさない）。 -->
+      <div class="tc-note" id="yukyu-left" hidden></div>
 
       <div class="tc-tabs">
         <button class="tc-btn sub" id="b-prev" type="button">前の月</button>
@@ -37,12 +47,13 @@
 
       <div id="list"></div>
 
-      <h2>あとから入れる</h2>
-      <div class="tc-note">
-        打ち忘れた日は、ここから入れられます。入れた分は
-        <span class="tc-tag pending">お願い中</span>
-        の札が付き、会社が見てから記録に入ります。
-      </div>
+      <!-- ★既定で畳む★（2026-08-18 夜 司さん「なんか複雑すぎんか？」）
+           ＝記録の画面は「打った時刻が並ぶ」のが主。★押した時だけ開く★。
+           ★押す物を画面に1つ★にする為でもある（打刻の直しと同時に出さない）。 -->
+      <p><button class="tc-btn sub wide" id="b-addopen" type="button" aria-expanded="false">
+        あとから入れる（打ち忘れた日）</button></p>
+      <div id="add-box" hidden>
+      <div class="tc-note">打ち忘れた日は、ここから入れられます。</div>
       <label for="ad">日</label>
       <div id="ad-wrap"></div>
       <label for="at">時刻</label>
@@ -58,9 +69,12 @@
       </select>
       <label for="ar">ひとこと（打ち忘れた理由など）</label>
       <input type="text" id="ar" />
-      <p><button class="tc-btn wide" id="b-add" type="button">お願いを出す</button></p>
-
-      <p><a class="tc-btn sub wide" id="to-punch" href="#">打つ画面にもどる</a></p>
+      <!-- ★出す前に1行 見せる★／★日・時刻・どれ が揃うまで押せない★
+           （2026-08-18 司さん「時間変更する前に間違えて押した時の仕様を見直すべきやろ」）
+           ＝時刻が --:-- のまま 押せてしまうのが 今までの穴。 -->
+      <div class="tc-note" id="add-why"></div>
+      <p><button class="tc-btn wide" id="b-add" type="button" disabled>足す</button></p>
+      </div>
     </div>
 
     <div class="tc-overlay" id="gate">
@@ -85,12 +99,18 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="js/supa-config.js?v=13dbbd8b"></script>
-    <script src="js/env-badge.js?v=13dbbd8b"></script>
-    <script src="lib/tc-pin.js?v=13dbbd8b"></script>
-    <script src="js/tc-ui.js?v=13dbbd8b"></script>
-    <script src="js/tc-db.js?v=13dbbd8b"></script>
-    <script src="js/emp-app.js?v=13dbbd8b"></script>
+    <script src="js/supa-config.js?v=05df1d9a"></script>
+    <script src="js/env-badge.js?v=05df1d9a"></script>
+    <script src="lib/tc-pin.js?v=05df1d9a"></script>
+    <!-- ★打った物の「使う／使わない」と「聞く事」を決める1本★
+         ★長さ（働いた分・追加ぶん・夜の分・お金）は1つも数えない★ので この画面から読んでよい。
+         社長の画面も 数える所も ★同じこの1本★を見る＝食い違わない。
+         （★この画面に 数える道具の名前すら書かない★＝見張りが名前で数えているため） -->
+    <script src="lib/tc-clean.js?v=05df1d9a"></script>
+    <script src="lib/tc-yukyu.js?v=05df1d9a"></script>
+    <script src="js/tc-ui.js?v=05df1d9a"></script>
+    <script src="js/tc-db.js?v=05df1d9a"></script>
+    <script src="js/emp-app.js?v=05df1d9a"></script>
     <script>
       EmpApp.startKiroku();
     </script>

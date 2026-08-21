@@ -168,13 +168,24 @@ for (const [file, list] of Object.entries(PLAN)) {
     fail++; console.log('  ✗ ' + file + ' を開けない — ' + e.message); continue;
   }
   await wait(); await wait();
-  /* 先に入れる（画面が描き終わってから＝後から描かれる欄にも入る） */
+  /* 先に入れる（画面が描き終わってから＝後から描かれる欄にも入る）
+     ★入れたら「入れた」と画面に伝える★（2026-08-18）
+     ＝本物の人が打つと oninput/onchange が走る。値だけ置くと
+     ★「揃うまで押せない」を入れた画面が ずっと押せないまま★になり、
+     ★押した気になって0回のまま緑★になる（実際に踏んだ）。 */
+  const fire = (el) => { if (!el) return; if (el.oninput) el.oninput(); if (el.onchange) el.onchange(); };
   for (const [id, v] of Object.entries(PREFILL[file] || {})) {
     const el = page.w.document.getElementById(id);
-    if (el) el.value = v;
+    if (el) { el.value = v; fire(el); }
   }
   const dateInput = page.w.document.querySelector('.tc-date-input');
-  if (dateInput) dateInput.value = '2026-08-04';
+  if (dateInput) {
+    dateInput.value = '2026-08-04';
+    /* 日付の欄は onchange を ★属性★で持っている（TcUi が組み立てる）→ 同じ物を直に呼ぶ */
+    if (page.w.TcUi && page.w.TcUi.onDateChange) page.w.TcUi.onDateChange(dateInput);
+    if (page.w.EmpApp && page.w.EmpApp.onAddChange) page.w.EmpApp.onAddChange();
+    fire(dateInput);
+  }
   const missing = [], threw = [], sawDisabled = [];
   for (const [id, , fill] of list) {
     const el = page.w.document.getElementById(id);
@@ -213,6 +224,327 @@ T('★集計の画面が 実際に数えて表を描いた（空振りしてい�
   ok(/出勤日数/.test(total), '月計が描かれていない');
   console.log('     実測: 日ごと ' + rows.length + '行 / 月計あり');
 });
+
+/* ★その日の結論を1行★（2026-08-18 指示役③）… ★社長の画面だけ 長さも足す★ */
+T('★★日を押すと その日の結論が1行 出る（08:00〜17:03（実労働 8:03）の形）★★', () => {
+  const r = results.filter((x) => x.file === 'shukei.html')[0];
+  const d2 = r.page.w.document;
+  const cell = [...d2.querySelectorAll('#cal [data-day]')].filter((b) => /\d+:\d\d/.test(b.textContent))[0];
+  ok(cell, 'カレンダーに 数字の入った日が1つも無い');
+  cell.click();
+  const line = d2.getElementById('cal-day').textContent;
+  ok(/は \d\d:\d\d〜\d\d:\d\d（実労働 \d+:\d\d）として数えます/.test(line),
+    '★結論の1行が出ていない（または 空きが入っている）★: ' + line.slice(0, 80));
+  console.log('     実測: ' + (/[^\n]*として数えます/.exec(line) || [''])[0].trim());
+});
+
+/* ── ★「出勤を打ち間違えた」は その日の行まで連れて行く★（2026-08-21 指示役が実配信で見つけた） ──
+   ＝前は 記録の いちばん上（月の頭）に着くだけ。今日の行は ずっと下に在って、
+     ★ボタンの言葉が約束している所★に着いていなかった。 */
+{
+  const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+  const p = openPage('punch.html', '?t=11111111-1111-1111-1111-111111111111',
+    { punches: [[today + 'T09:00', 'in']] });
+  await wait(); await wait(); await wait();
+  T('★★「出勤を打ち間違えた」の行き先に その日が付いている★★', () => {
+    const a = p.w.document.getElementById('to-fix');
+    ok(a && !a.hidden, '★出勤中なのに 逃げ道が出ていない★');
+    ok(/kiroku\.html\?t=/.test(a.href), '行き先が違う: ' + a.href);
+    ok(a.href.indexOf('d=' + today) > 0, '★その日が付いていない★: ' + a.href);
+    console.log('     実測: ' + a.getAttribute('href'));
+  });
+
+  const k = openPage('kiroku.html', '?t=11111111-1111-1111-1111-111111111111&d=' + today,
+    { punches: [[today + 'T09:00', 'in']] });
+  await wait(); await wait(); await wait(); await wait();
+  T('★★その行き先を開くと その日の打刻が すでに開いている★★', () => {
+    const d2 = k.w.document;
+    const open = [...d2.querySelectorAll('[data-pid][aria-expanded="true"]')];
+    ok(open.length === 1, '★開いている行が ' + open.length + '個（1個のはず）★');
+    const card = open[0].closest('.tc-card');
+    ok(/#/.test('#') && card.textContent.indexOf(today.slice(5).replace('-', '/')) >= 0,
+      '★別の日を開いている★: ' + card.textContent.slice(0, 40));
+    const btns = [...card.querySelectorAll('button')].map((b) => b.textContent.trim());
+    ok(btns.some((x) => /時刻を直す/.test(x)) && btns.some((x) => /消す/.test(x)),
+      '★開いたのに 直す・消すが出ていない★: ' + JSON.stringify(btns));
+    console.log('     実測: ' + today + ' の行が開いている（' + JSON.stringify(btns.slice(0, 3)) + '）');
+  });
+
+  const k2 = openPage('kiroku.html', '?t=11111111-1111-1111-1111-111111111111',
+    { punches: [[today + 'T09:00', 'in']] });
+  await wait(); await wait(); await wait(); await wait();
+  T('★★ふつうに開いた時は 何も開かない（勝手に開かない）★★', () => {
+    const open = [...k2.w.document.querySelectorAll('[data-pid][aria-expanded="true"]')];
+    ok(open.length === 0, '★勝手に ' + open.length + '個 開いている★');
+    console.log('     実測: 開いている行 0個');
+  });
+}
+
+/* ── ★中の言葉（pin_set）を 客に見せない★（2026-08-21 指示役が実配信で見つけた） ──────
+   実物に出ていた … 「2026-08-21 12:15　pin_set　田中 花子」＝★中の印がそのまま★
+   ★2重で止める★ … ①倉庫へ「締めの3つだけ」と頼む ②言葉を持っていない記録は 描かない */
+{
+  const p = openPage('shukei.html', '', { mix: true, ym: '2026-08', pinInLog: true });
+  await wait(); await wait(); await wait();
+  T('★★締めの記録に 中の言葉（pin_set）が1つも出ない★★', () => {
+    const t = p.w.document.getElementById('chist').textContent;
+    ok(t.indexOf('pin_set') < 0, '★中の印が そのまま出ている★: ' + t.slice(0, 120));
+    ok(t.indexOf('pin_reissue') < 0, '★中の印が そのまま出ている★: ' + t.slice(0, 120));
+    ok(p.fake._calls.indexOf('tc_close.in') >= 0, '★倉庫に「締めの3つだけ」と頼んでいない★');
+    console.log('     実測: 倉庫へ in(close/reopen/export) を送った／画面に pin_set 0件');
+  });
+}
+
+/* ── ★広い画面でも 有給を付けられるか★（2026-08-21 指示役が実配信で見つけた） ─────
+   広い画面は17列の表になり、★カレンダーごと消えて 有給を付ける所が どこにも無かった★。 */
+{
+  const p = openPage('shukei.html', '', { mix: true, ym: '2026-08' });
+  await wait(); await wait(); await wait();
+  const d2 = p.w.document;
+  T('★★広い画面の表も 行を押したら その日の箱が開く（有給を付けられる）★★', () => {
+    const rows = [...d2.querySelectorAll('#daily tbody tr[data-day]')];
+    ok(rows.length > 0, '★表の行に 日の番号が付いていない★');
+    const box = d2.getElementById('cal-day');
+    ok(box.hidden, '押す前から開いている');
+    rows[2].click();
+    ok(!box.hidden && box.className.indexOf('open') >= 0,
+      '★行を押しても 箱が開かない（className=' + box.className + '）★');
+    const yk = box.querySelector('[data-yk]');
+    ok(yk, '★開いたのに 有給を付ける物が無い★');
+    console.log('     実測: 表の行 ' + rows.length + '本／押すと「' + yk.textContent.trim() + '」が出る');
+  });
+}
+
+/* ── ★入社日は 入れてよい範囲の外を 通さない★（2026-08-21 指示役が 40120-02-01 を入れられた） ── */
+{
+  const p = openPage('index.html', '', { people: 4, hireMix: true, mix: true });
+  await wait(); await wait(); await wait();
+  const d3 = p.w.document;
+  d3.getElementById('tab-people').click();
+  await wait();
+  T('★★ありえない入社日は 決めさせない（理由を出す・倉庫へ行かせない）★★', () => {
+    const inp = d3.getElementById('hire-field').querySelector('.tc-date-input');
+    const btn = d3.getElementById('b-hire-save');
+    ok(inp.min && inp.max, '★欄に 範囲が付いていない★（min=' + inp.min + ' max=' + inp.max + '）');
+    const before = (p.fake._saved || []).filter((x) => x.table === 'tc_pub').length;
+    inp.value = '40120-02-01';
+    p.w.OwnerApp._hirePreview();
+    ok(btn.disabled, '★ありえない日でも ［決める］が押せる★');
+    const why = d3.getElementById('hire-result').textContent;
+    ok(why && !/有給の残り/.test(why), '★理由を出していない★: ' + why);
+    btn.click();
+    const after = (p.fake._saved || []).filter((x) => x.table === 'tc_pub').length;
+    ok(after === before, '★倉庫へ行ってしまった★（' + before + '→' + after + '）');
+    console.log('     実測: 範囲 ' + inp.min + ' 〜 ' + inp.max + '／「' + why.trim() + '」／倉庫へ 0件');
+  });
+
+  T('★★入れた日は そのまま見える（DOMに在る≠読める）★★', () => {
+    const inp = d3.getElementById('hire-field').querySelector('.tc-date-input');
+    inp.value = '2019-04-01';
+    p.w.OwnerApp._hirePreview();
+    const show = inp.parentNode.querySelector('.tc-date-show');
+    ok(show.textContent.indexOf('2019-04-01') >= 0 || show.textContent.indexOf('4/1') >= 0,
+      '★入れた日が 欄に出ていない★: 「' + show.textContent + '」');
+    ok(!d3.getElementById('b-hire-save').disabled, '★入れられる日なのに 押せない★');
+    console.log('     実測: 欄に「' + show.textContent.trim() + '」');
+  });
+}
+
+/* ── ★入社日を1人ずつ聞く★（2026-08-19 指示役④-①）＝★実UIで答えて 倉庫を読む★ ────
+   実データは ★18人中14人が空★。空のままだと 8割の人の有給が数えられない。 */
+{
+  const p = openPage('index.html', '', { people: 4, hireMix: true, mix: true });
+  await wait(); await wait(); await wait();
+  const d2 = p.w.document;
+  console.log('  [入社日] 押す物: 従業員タブ → 日付 → ［決める］／［あとで］');
+
+  T('★★入社日が空の人にだけ 1人ずつ聞く（別の画面を作らない・1問だけ）★★', () => {
+    d2.getElementById('tab-people').click();
+    const box = d2.getElementById('hire-ask');
+    ok(box && !box.hidden, '★聞く箱が出ていない★');
+    ok(box.querySelectorAll('.tc-card').length === 1, '★一度に ' + box.querySelectorAll('.tc-card').length + '人 聞いている（1人のはず）★');
+    ok(/さんの入社日は？/.test(box.textContent), '★聞き方が違う★: ' + box.textContent.slice(0, 60));
+    const num = /入社日が入っていない人 (\d+)人／(\d+)人/.exec(box.textContent);
+    ok(num, '★何人 空いているかを出していない★');
+    console.log('     実測: 「' + (/[^]*?さんの入社日は？/.exec(box.textContent) || [''])[0].trim()
+      + '」／' + num[0] + '／一度に聞くのは 1人');
+  });
+
+  T('★★答えたら その場で結果を返す（保存する前に「この日なら…」）★★', () => {
+    const inp = d2.getElementById('hire-field').querySelector('.tc-date-input');
+    ok(inp, '日付の欄が無い');
+    inp.value = '2019-04-01';
+    p.w.TcUi.onDateChange(inp);
+    p.w.OwnerApp._hirePreview();
+    const res = d2.getElementById('hire-result');
+    ok(!res.hidden && /有給の残り \d+日/.test(res.textContent), '★その場で返していない★: ' + res.textContent);
+    console.log('     実測: 「' + res.textContent.trim() + '」');
+  });
+
+  T('★★［決める］を押したら 倉庫に入社日が1件 書かれた（1問ごと保存）★★', () => {
+    const before = (p.fake._saved || []).filter((x) => x.table === 'tc_pub').length;
+    d2.getElementById('b-hire-save').click();
+    const rows = (p.fake._saved || []).filter((x) => x.table === 'tc_pub');
+    ok(rows.length === before + 1, '★押したのに 倉庫へ行っていない★（' + before + '→' + rows.length + '）');
+    const row = rows[rows.length - 1].row;
+    ok(row.hire_date === '2019-04-01', '★入れた日が違う★: ' + JSON.stringify(row));
+    ok(Object.keys(row).length === 1, '★入社日のほかも書き換えている★: ' + Object.keys(row).join(','));
+    console.log('     実測: hire_date=' + row.hire_date + ' の1項目だけ書いた');
+  });
+
+  T('★★［あとで］で 次の人に進む（空のままでも止めない）★★', () => {
+    const box = d2.getElementById('hire-ask');
+    const who = (/[^]*?さん/.exec(box.textContent) || [''])[0];
+    d2.getElementById('b-hire-later').click();
+    const box2 = d2.getElementById('hire-ask');
+    const who2 = (/[^]*?さん/.exec(box2.textContent) || [''])[0];
+    ok(box2.hidden || who2 !== who, '★「あとで」を押しても 同じ人を聞き続けている★: ' + who2);
+    console.log('     実測: ' + who.trim() + ' → ' + (box2.hidden ? '（もう居ない）' : who2.trim()));
+  });
+}
+
+{
+  const p = openPage('index.html', '', { people: 3, mix: true });   /* 全員 入社日が入っている種 */
+  await wait(); await wait(); await wait();
+  T('★★全員 入社日が入っていれば 聞く箱を出さない（用が済んだ物を見せない）★★', () => {
+    p.w.document.getElementById('tab-people').click();
+    const box = p.w.document.getElementById('hire-ask');
+    ok(box.hidden, '★もう聞く事が無いのに 出している★: ' + box.textContent.slice(0, 60));
+    ok(box.innerHTML === '', '★中身が残っている★');
+    console.log('     実測: 箱ごと出さない（hidden=' + box.hidden + '）');
+  });
+}
+
+/* ── ★年5日★（2026-08-19 指示役④-②）＝★10日以上 付いた人だけ★ ─────────────── */
+{
+  const p = openPage('index.html', '', { people: 4, hireMix: true, mix: true });
+  await wait(); await wait(); await wait(); await wait();
+  T('★★年5日＝対象の人だけ「あと◯日（期限 ◯年◯月◯日）」が出る★★', () => {
+    const d3 = p.w.document;
+    const head = d3.getElementById('must5-head'), box = d3.getElementById('must5');
+    ok(!head.hidden, '★対象が居るのに 見出しが出ていない★');
+    const cards = box.querySelectorAll('.tc-card');
+    ok(cards.length > 0, '★1人も出ていない★');
+    const n = /年5日（(\d+)人）/.exec(head.textContent);
+    ok(n && +n[1] === cards.length, '★見出しの人数が 中身と合っていない★: ' + head.textContent);
+    ok(/あと \d+日/.test(box.textContent), '★あと何日を出していない★');
+    ok(/期限 \d{4}年\d{1,2}月\d{1,2}日/.test(box.textContent), '★期限を出していない★: ' + box.textContent.slice(0, 100));
+    /* ★入社日が無い人は 出さない★（数えられないのに 出したら嘘になる） */
+    const noHire = [...p.w.OwnerApp._st.people].filter((x) => !x.hire_date).map((x) => x.name);
+    const shown = box.textContent;
+    noHire.forEach((nm) => ok(shown.indexOf(nm) < 0, '★入社日が無い ' + nm + ' を出している★'));
+    console.log('     実測: ' + head.textContent.trim() + '／'
+      + (/あと \d+日/.exec(shown) || [''])[0] + '／'
+      + (/期限 [^（]*/.exec(shown) || [''])[0].trim()
+      + '／入社日が無い ' + noHire.length + '人は 出さない');
+  });
+}
+
+{
+  const p = openPage('index.html', '', { hireDate: null });   /* 入社日が無い1人だけ */
+  await wait(); await wait(); await wait(); await wait();
+  T('★★年5日の対象が0人なら 見出しごと出さない★★', () => {
+    const d4 = p.w.document;
+    ok(d4.getElementById('must5-head').hidden, '★0人なのに 見出しが出ている★');
+    ok(d4.getElementById('must5').innerHTML === '', '★0人なのに 中身が残っている★');
+    console.log('     実測: 見出しも中身も 0');
+  });
+}
+
+/* ── ★従業員の画面は「残り◯日」を出すだけ★（2026-08-19 指示役⑤） ─────────────
+   ★押す物は置かない★（付ける・外すは 社長だけ）／★入社日が無い人には 何も出さない★。 */
+{
+  const p = openPage('kiroku.html', '?t=11111111-1111-1111-1111-111111111111',
+    { yukyuDays: ['2026-03-02', '2026-05-01'] });
+  await wait(); await wait(); await wait();
+  T('★★従業員の画面に「有給の残り ◯日」が1行 出る（押す物は増やさない）★★', () => {
+    const el = p.w.document.getElementById('yukyu-left');
+    ok(el && !el.hidden, '★出ていない★');
+    ok(/^有給の残り \d+日$/.test(el.textContent.trim()), '★言い方が違う★: ' + el.textContent);
+    ok(el.querySelectorAll('button, a, select, input').length === 0, '★押す物を置いている★');
+    console.log('     実測: 「' + el.textContent.trim() + '」／その行の押す物 0個');
+  });
+}
+
+{
+  const p = openPage('kiroku.html', '?t=11111111-1111-1111-1111-111111111111', { hireDate: null });
+  await wait(); await wait(); await wait();
+  T('★★入社日が無い人（実データで 18人中14人）には 何も出さない（0日と嘘を書かない）★★', () => {
+    const el = p.w.document.getElementById('yukyu-left');
+    ok(el && el.hidden, '★数えられないのに 出している★: ' + (el && el.textContent));
+    ok((el.textContent || '').indexOf('0日') < 0, '★0日と書いている★');
+    console.log('     実測: 箱ごと出さない（hidden=' + el.hidden + '）');
+  });
+}
+
+/* ── ★有給を 付ける／外す★（2026-08-19 指示役②）＝★実UIで押して 倉庫を読む★ ──────
+   ここは ★押した気になって緑★を作らない：押す前と後で ★倉庫に書かれた物★を数える。 */
+{
+  const p = openPage('shukei.html', '', { mix: true, ym: '2026-08' });
+  await wait(); await wait(); await wait();
+  const d2 = p.w.document;
+  /* ★押す物の一覧を先に出す★（押した数を後から数えない） */
+  console.log('  [有給] 押す物: #cal の日 → 「有給にする」 → もう一度 開いて 「有給をやめる」');
+
+  T('★★日を開くと 有給の残りが その場で出る（付与＋繰越−使った）★★', () => {
+    const cell = [...d2.querySelectorAll('#cal [data-day]')][0];
+    ok(cell, 'カレンダーの日が無い');
+    cell.click();
+    const t = d2.getElementById('cal-day').textContent;
+    const m = /残り\s*(\d+)日（付与 (\d+) ＋ 繰越 (\d+) − 使った (\d+)）/.exec(t);
+    ok(m, '★残りが出ていない★: ' + t.slice(-120));
+    ok(+m[1] === Math.max(0, +m[2] + +m[3] - +m[4]),
+      '★足し算が合っていない★: ' + m[0]);
+    console.log('     実測: ' + m[0]);
+  });
+
+  T('★★「有給にする」を押したら 倉庫に paid_leave が書かれた（誰が・いつ 付き）★★', () => {
+    const before = (p.fake._saved || []).filter((x) => x.table === 'tc_shift').length;
+    const btn = d2.querySelector('#cal-day [data-yk]');
+    ok(btn, '★押す物が無い★');
+    ok(btn.textContent.trim() === '有給にする', '言葉が違う: ' + btn.textContent);
+    btn.click();
+    const rows = (p.fake._saved || []).filter((x) => x.table === 'tc_shift');
+    ok(rows.length === before + 1, '★押したのに 倉庫へ行っていない★（' + before + '→' + rows.length + '）');
+    const row = rows[rows.length - 1].row;
+    ok(row.day_kind === 'paid_leave', '★有給として書いていない★: ' + row.day_kind);
+    ok(row.day_kind_by, '★誰が付けたかが残っていない★');
+    ok(row.day_kind_at, '★いつ付けたかが残っていない★');
+    console.log('     実測: ' + row.d + ' → ' + row.day_kind + '（誰が: 有り／いつ: 有り）');
+  });
+
+  T('★★もう有給の日には「やめる」しか出ない（今の状態で押せる物だけ）★★', () => {
+    /* ★有給の日★（種が入れてある 8/2）を開く＝押す物が「やめる」に変わる */
+    const cells = [...d2.querySelectorAll('#cal [data-day]')];
+    const yu = cells.filter((b) => /有/.test(b.textContent))[0];
+    ok(yu, '★有給の印が付いた日が1つも無い★');
+    yu.click();
+    const btns = [...d2.querySelectorAll('#cal-day [data-yk]')];
+    ok(btns.length === 1, '★押す物が ' + btns.length + '個（1個のはず）★');
+    ok(btns[0].textContent.trim() === '有給をやめる', '言葉が違う: ' + btns[0].textContent);
+    ok(btns[0].getAttribute('data-yk') === 'work', '★戻す先が work でない★');
+    console.log('     実測: 有給の日を開くと 「' + btns[0].textContent.trim() + '」1個だけ');
+  });
+}
+
+/* ★締めた月は 有給も 付けられない（可否は締めの1か所から聞く）★ */
+{
+  const p = openPage('shukei.html', '', { mix: true, ym: '2026-07', closedYm: '2026-07' });
+  await wait(); await wait(); await wait();
+  T('★★締めた月は 有給の押す物を そもそも出さない（理由を出す）★★', () => {
+    const d3 = p.w.document;
+    const cell = [...d3.querySelectorAll('#cal [data-day]')][0];
+    if (!cell) { console.log('     実測: この月はカレンダーが無い（試験の種を見直す）'); ok(false, 'カレンダーが無い'); }
+    cell.click();
+    const box = d3.getElementById('cal-day');
+    const btns = [...box.querySelectorAll('[data-yk]')];
+    ok(btns.length === 0, '★締めた月なのに 押せる★（' + btns.length + '個）');
+    /* ★理由は 締めの1か所（lib/tc-close.js）が作る文★＝ここで言い換えない */
+    ok(/確定しています/.test(box.textContent), '★理由が出ていない★: ' + box.textContent.slice(-100));
+    console.log('     実測: 押す物 0個／理由「'
+      + (/この月は[^]*?要ります/.exec(box.textContent) || [''])[0] + '」');
+  });
+}
 
 T('★「渡す」を押したらファイルが実際に作られた（名前も出る）', () => {
   const r = results.filter((x) => x.file === 'shukei.html')[0];
@@ -295,15 +627,36 @@ T('★印刷は「紙だけの新しい窓」で開く（中身が0枚なら開�
   ok(!/どう絞り込んだ|絞り込み|フィルタ/.test(body), '★紙に絞り込みの説明を刷っている★');
 });
 
-T('★従業員の画面が 打刻を倉庫へ送った（押しただけで終わっていない）', () => {
+/* ★2026-08-18 4つ全部は押せなくなった★（司さん「出勤押してもないのに退勤おせるとか」）
+   ＝★いまの状態で押してよい物だけ★出す。この画面の種は「出勤中」なので
+     押せるのは ★退勤 と 私用で外出 の2つだけ★（出勤・外出から戻るは その状態では出さない）。
+   ★押せなかった物は sawDisabled に出る★＝黙って0回になっていないかを ここで数える。 */
+T('★従業員の画面が 打刻を倉庫へ送った（押せる物だけ・押しただけで終わっていない）', () => {
   const r = results.filter((x) => x.file === 'punch.html')[0];
   const n = r.page.fake._calls.filter((c) => c === 'rpc:tc_punch_add').length;
-  ok(n === 4, '打刻のRPCが ' + n + '回（4つのボタンぶん来ていない）');
+  ok(n >= 1, '打刻のRPCが ' + n + '回（1回も送っていない）');
+  const st = r.page.w.TcClean.stateOf([
+    { at: '2026-08-03T09:00', kind: 'in' }, { at: '2026-08-03T20:00', kind: 'out' },
+    { at: '2026-08-04T09:30', kind: 'in', src: 'calendar', pending: true },
+  ], {});
+  const canPress = ['in', 'out', 'away_in', 'away_out'].filter((k) => st.allow[k]).length;
+  ok(n === canPress, '押せるはずの ' + canPress + '個と 送った ' + n + '回が合っていない');
+  console.log('     実測: 状態「' + st.label + '」→ 押せる ' + canPress + '個 / 送った ' + n + '回'
+    + ' / 押せなかった物 ' + JSON.stringify(r.sawDisabled));
 });
 
-T('★あとから入れる は お願い(申請)として送られる', () => {
+/* ★2026-08-18 夜3 司さん「シンプルイズベスト」★
+   ＝★決まりは1つ（自分の打刻は自分で直せる・消せる。締めた後はできない）★
+   あとから入れる分も ★その場で入る★（お願い・承認は画面から消えた）。 */
+T('★あとから入れる は その場で入る（お願いにしない・跡は中で残る）', () => {
   const r = results.filter((x) => x.file === 'kiroku.html')[0];
-  ok(r.page.fake._calls.indexOf('rpc:tc_fix_request') >= 0, '申請が送られていない');
+  const c = r.page.fake._calls;
+  ok(c.indexOf('rpc:tc_punch_edit') >= 0, '★その場で入れていない★');
+  ok(c.indexOf('rpc:tc_fix_request') < 0, '★まだ お願いを出している★');
+  const add = r.page.fake._store.edit.filter((x) => !x.p_id);
+  ok(add.length >= 1, '足した分が ' + add.length + '件');
+  ok(add[0].p_kind, '★種類を渡していない★');
+  console.log('     実測: 足した ' + add.length + '件（その場で入る）／お願い 0件');
 });
 
 /* ── 暗証番号（★従業員が持つ秘密は これ1つだけ★） ───────────────── */
@@ -436,15 +789,17 @@ T('★あとから入れる は お願い(申請)として送られる', () => {
        ★「暗証番号あり・帳面に記録なし」の人を作らないと この検査は素通りする★ */
     const d2 = pwSetPage.w.document;
     d2.getElementById('tab-people').click();
-    const cards = [...d2.querySelectorAll('#people .tc-card')];
-    ok(cards.length > 0, '従業員のカードが無い');
-    cards.forEach((c) => {
+    /* ★2026-08-16 から 1人1行★（開くと中が出る）。★開かないと説明が読めない＝必ず開いて数える★ */
+    const rows = [...d2.querySelectorAll('#people .tc-row')];
+    ok(rows.length > 0, '従業員の行が無い');
+    rows.forEach((c) => {
+      c.querySelector('[data-open]').click();
       const t = c.textContent.replace(/\s+/g, ' ');
-      const hasTag = /暗証番号あり/.test(t);
+      const hasTag = /済/.test(c.querySelector('.tc-tag').textContent);
       const saysNone = /まだ暗証番号を決めていません/.test(t);
       ok(!(hasTag && saysNone), '★札と説明が食い違っている★: ' + t.slice(0, 90));
     });
-    console.log('     実測: 従業員 ' + cards.length + '枚で 食い違い 0件');
+    console.log('     実測: 従業員 ' + rows.length + '行を開いて 食い違い 0件');
   });
 
   T('★★同じ従業員番号は 人が読む言葉で止まる（倉庫へ書きに行かない）★★', () => {
@@ -516,9 +871,449 @@ T('★あとから入れる は お願い(申請)として送られる', () => {
   T('★★締め切った月でも 打った時刻は見えたまま（隠さない）★★', () => {
     const box = closedPages['kiroku.html'].w.document.getElementById('list');
     ok(/\d\d:\d\d/.test(box.textContent), '★時刻が消えている★');
+    /* ★数えない分（まだ入っていない打刻）は 出さない★ので、出るのは数える打刻だけ */
     const n = (box.textContent.match(/\d\d:\d\d/g) || []).length;
-    ok(n >= 3, '出ている時刻が ' + n + '個');
-    console.log('     実測: 締め切った後も 時刻 ' + n + '個が見えたまま');
+    ok(n >= 2, '出ている時刻が ' + n + '個');
+    console.log('     実測: 締め切った後も 数える打刻 ' + n + '個が見えたまま');
+  });
+}
+
+/* ── ★★ミスが起きない作り（打つ画面）★★（2026-08-18 司さん）────────────────
+   「出勤押してもないのに退勤おせるとか」「間違えて押した時の仕様を見直すべきやろ」
+   ★押す物の一覧を先に書く★:
+     未出勤の画面 … #b-in（押せる・大きい）／#b-out（★灰色＋理由★）／#b-ain #b-aout（出さない）
+     押した直後   … #b-undo（★60秒だけ出る★）／#b-in（「いま打ちました」で押せない）
+     出勤中の画面 … #b-out（押せる・大きい）／#b-in（出さない）／#to-fix（打ち間違えた）
+     過去の時刻   … 全部 押せない＋#t-why に理由 */
+{
+  const nowJst = new Date(Date.now() + 9 * 3600000).toISOString();
+  const today = nowJst.slice(0, 10);
+  const T_URL = '?t=11111111-1111-1111-1111-111111111111';
+  console.log('\n  punch.html（★いまの状態で押せる物だけ出す★）で押す物');
+  ['#b-in（未出勤）', '#b-undo（打った直後60秒）', '#b-out（出勤中）'].forEach((s) => console.log('    - ' + s));
+
+  /* ① まだ出勤していない人 */
+  const p0 = openPage('punch.html', T_URL, { punches: [] });
+  await wait(); await wait(); await wait();
+  T('★★出勤していない人に「退勤」を押させない（灰色＋理由）★★', () => {
+    const d2 = p0.w.document;
+    ok(!d2.getElementById('b-in').disabled, '★出勤が押せない★');
+    ok(/main/.test(d2.getElementById('b-in').className), '★押せる物が大きくなっていない★');
+    ok(d2.getElementById('b-out').disabled, '★出勤していないのに 退勤が押せる★');
+    ok(!d2.getElementById('b-out').hidden, '退勤を消してしまった（灰色で残して理由を出す）');
+    ok(d2.getElementById('b-ain').hidden && d2.getElementById('b-aout').hidden, '外出の2つが出ている');
+    const why = d2.getElementById('deny-why');
+    ok(!why.hidden && /先に出勤/.test(why.textContent), '★押せない理由が出ていない★: ' + why.textContent);
+    ok(/まだ出勤していません/.test(d2.getElementById('state-now').textContent), 'いまの状態が出ていない');
+    console.log('     実測: 理由「' + why.textContent + '」');
+  });
+
+  /* ② 押した直後（★取り消せる★・同じ物は押せない） */
+  p0.w.document.getElementById('b-in').click();
+  await wait(); await wait();
+  T('★★打った直後は「取り消す」が出て、同じボタンは押せない★★', () => {
+    const d2 = p0.w.document;
+    const box = d2.getElementById('undo');
+    ok(!box.hidden, '★取り消す箱が出ていない★');
+    ok(/取り消せます/.test(d2.getElementById('undo-what').textContent),
+      '残り時間を出していない: ' + d2.getElementById('undo-what').textContent);
+    ok(d2.getElementById('b-in').disabled, '★同じボタンが続けて押せる（連打できる）★');
+    ok(/いま打ちました/.test(d2.getElementById('b-in').textContent), '★押せない事を字で出していない★');
+    console.log('     実測: ' + d2.getElementById('undo-what').textContent);
+  });
+
+  T('★★取り消すと 会社には何も出ない（お願いにもならない）★★', () => {
+    const d2 = p0.w.document;
+    d2.getElementById('b-undo').click();
+    ok(p0.fake._store.undo.length === 1, '★取り消しを倉庫へ出していない★');
+    ok(p0.fake._store.fixReq.length === 0, '★取り消しなのに お願いを出している★');
+    ok(!p0.fake._calls.some((c) => /tc_punch\.delete/.test(c)), '★打刻を消している★');
+    console.log('     実測: 取り消し 1件／お願い 0件（★消す道は通っていない★）');
+  });
+
+  /* ③ 出勤中の人（★前の日の夜から出勤中★＝いま何時でも「最後より後」になる＝時計に振り回されない） */
+  const yday = new Date(Date.parse(today + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
+  const p1 = openPage('punch.html', T_URL, { punches: [[yday + 'T23:00', 'in']] });
+  await wait(); await wait(); await wait();
+  T('★★出勤中の人には「退勤」だけ大きく（出勤は出さない・打ち間違えたの逃げ道を出す）★★', () => {
+    const d2 = p1.w.document;
+    ok(d2.getElementById('b-in').hidden, '★出勤中なのに 出勤が出ている★');
+    ok(!d2.getElementById('b-out').disabled && /main/.test(d2.getElementById('b-out').className),
+      '★退勤が大きく押せる形になっていない★');
+    ok(!d2.getElementById('to-fix').hidden, '★「出勤を打ち間違えた」の逃げ道が無い★');
+    ok(/出勤中/.test(d2.getElementById('state-now').textContent), d2.getElementById('state-now').textContent);
+  });
+
+  /* ④ ★過去の時刻には打たせない★（08/17 の事故はここから起きた）
+     ★時計に振り回されない形で測る★＝今日 09:00 に出勤した人が 08:00 を選ぶ（値は直に入れる） */
+  const p2 = openPage('punch.html', T_URL, { punches: [[today + 'T09:00', 'in']] });
+  await wait(); await wait(); await wait();
+  T('★★最後に打った時刻より前は 押せない（打つ画面で過去へ戻らせない）★★', () => {
+    const d2 = p2.w.document;
+    const t = d2.getElementById('t');
+    t.value = '08:00';                       // 09:00 に出勤した後に 08:00 を選ぶ
+    t.onchange();
+    ok(d2.getElementById('b-out').disabled, '★過去の時刻で 退勤が押せる★');
+    const why = d2.getElementById('t-why');
+    ok(!why.hidden && /最後に打ったのは 09:00/.test(why.textContent), '理由が出ていない: ' + why.textContent);
+    ok(/記録へ/.test(why.textContent), '★逃げ道（あとから入れる）を出していない★');
+    console.log('     実測: 「' + why.textContent + '」');
+  });
+}
+
+/* ── ★★連打・打ち間違い・時刻ちがい（★畳んだ後★）★★（2026-08-18 夜 司さん「複雑すぎんか？」）
+   ★押す物の一覧を先に書く★:
+     ① 08/17 の実物5本 … #ask0-in（出勤でした）★その日の質問は1つだけ★
+     ② 行を押す        … [data-pid] → ★2つだけ★ #fix-open（時刻を直す）／#fix-drop（これは間違い）
+     ③ 直す            … #fix-open → #fix-c0（候補）→ #fix-send（お願いを出す）
+     ④ あとから入れる  … #b-addopen（★既定は畳む★）
+   ★合格の数★: 開いた行に見える押せる物 ≤3／「お願いを出す」は画面に1つ／同じ字のボタンは1つ */
+{
+  const REAL = [['2026-08-17T08:00', 'in'], ['2026-08-17T08:00', 'out'], ['2026-08-17T08:00', 'in'],
+    ['2026-08-17T17:03', 'out'], ['2026-08-17T21:44', 'in']];
+  const T_URL = '?t=11111111-1111-1111-1111-111111111111';
+  console.log('\n  kiroku.html（★08/17 の実物 5本・畳んだ後★）で押す物');
+  ['#ask0-in', '[data-pid]', '#fix-open', '#fix-c0', '#fix-send', '#fix-drop', '#b-addopen']
+    .forEach((x) => console.log('    - ' + x));
+
+  /** ★見えている押せる物だけ数える★（hidden の中は数えない） */
+  const visBtns = (w, root) => [...(root || w.document).querySelectorAll('button, a.tc-btn')]
+    .filter((b) => !b.closest('[hidden]') && !b.hidden);
+
+  const p = openPage('kiroku.html', T_URL, { punches: REAL });
+  await wait(); await wait(); await wait();
+  const text0 = p.w.document.getElementById('list').textContent;
+
+  T('★★おかしい所は言う。ただし ★1日に1つまで★（質問を積み上げない）★★', () => {
+    /* ★数えない打刻は 画面に出さない★（2026-08-18 司さん「そもそも数えんのなら見せるなや」）
+       ＝08/17 の5本のうち ★出るのは 数える物だけ★（同じ分に2回 押した分は出さない） */
+    ok(!/2回 押しました/.test(text0), '★数えない打刻を見せている★');
+    ok(!/まとめました/.test(text0), '★まとめた説明が残っている★');
+    /* ★打刻の行だけ数える★（説明の文にも時刻は出るので 行で数える） */
+    const shownRows = p.w.document.querySelectorAll('#list .tc-punchline').length;
+    ok(shownRows === 4, '★出ている打刻の行が ' + shownRows + '本★（数える4本のはず）');
+    console.log('     実測: 出ている打刻 ' + shownRows + '本（原本5本のうち 2回押した1本は出さない）');
+    ok(/08:00 は 出勤と退勤が同じ時刻です。どちらでしたか？/.test(text0), '★どちらか聞いていない★');
+    ok(/決められません/.test(text0), '★その日の結論を出していない★');
+    ok(!/まだ退勤が入っていません/.test(text0), '★同じ日に 質問を2つ並べている★');
+    const asks = p.w.document.querySelectorAll('#list .tc-ask');
+    ok(asks.length === 1, '★その日に出ている質問が ' + asks.length + '個★');
+    console.log('     実測: 質問 ' + asks.length + '個（08/17）');
+  });
+
+  T('★★「あとから入れる」は既定で畳む＝「お願いを出す」は1つも見えていない★★', () => {
+    const d2 = p.w.document;
+    ok(d2.getElementById('add-box').hidden, '★あとから入れるが開きっぱなし★');
+    const sends = visBtns(p.w).filter((b) => /お願いを出す/.test(b.textContent));
+    ok(sends.length === 0, '★畳んでいるのに「お願いを出す」が ' + sends.length + '個 見えている★');
+  });
+
+  T('★★従業員の画面に 数えた結果の言葉が1つも出ていない（時刻だけ）★★', () => {
+    ['実労働', '労働時間', '残業', '時間外', '深夜', '割増', '丸め', '金額', '時給', '法定']
+      .forEach((w) => ok(text0.indexOf(w) < 0, '★' + w + ' が出ている★'));
+  });
+
+  /* ① 質問に答える（1問ごとに保存） */
+  const a0 = p.w.document.getElementById('ask0-in');
+  if (a0) a0.click();
+  await wait(); await wait();
+  T('★★質問の答えは ★その場で記録に入る★（お願いにしない・締めていない月）★★', () => {
+    ok(a0, '#ask0-in が無い');
+    const ed = p.fake._store.edit, req = p.fake._store.fixReq;
+    ok(ed.length === 1, '★自分で直す道を通っていない★（' + ed.length + '件）');
+    ok(ed[0].p_at === null, '★取り消しなのに 時刻を送っている★');
+    ok(/08:00 は 出勤でした/.test(ed[0].p_reason), ed[0].p_reason);
+    ok(req.length === 0, '★会社を待たせる道を通っている★: ' + req.length + '件');
+    /* ★「直しました」は 押した時に1回 出すだけ★（画面に貼り付けない・司さんの決まり）
+       ※本物では 記録が変わるので 次の描き直しで質問そのものが消える。
+         ここは倉庫の代わりが 前の打刻を返し続けるので、★貼り付けていない事★だけを見る。 */
+    const toast = (p.w.document.querySelector('.tc-toast') || {}).textContent || '';
+    ok(/直しました/.test(toast), '★押した時に何も言っていない★: ' + toast);
+    ok(!/直しました/.test(p.w.document.getElementById('list').textContent), '★画面に貼り付けている★');
+    console.log('     実測: その場で直した 1件／言ったのは押した時の1回だけ');
+  });
+
+  /* ② 行を押す＝★2つだけ★ */
+  const pb = openPage('kiroku.html', T_URL, { punches: REAL });
+  await wait(); await wait(); await wait();
+  const rows = () => [...pb.w.document.querySelectorAll('[data-pid]')];
+  const rowCount = rows().length;
+  if (rows()[0]) rows()[0].click();
+  await wait(); await wait();
+
+  T('★★行を押すと出るのは 2つだけ（時刻を直す／これは間違い）＝押せる物 3つまで★★', () => {
+    const d2 = pb.w.document;
+    const panel = d2.querySelector('.tc-punchrow .tc-ask');
+    ok(panel, '★開いていない★');
+    ok(d2.getElementById('fix-open') && d2.getElementById('fix-drop'), '2つが出ていない');
+    ok(!d2.getElementById('fix-send'), '★候補も「お願いを出す」も先に出している★');
+    /* ★開いた行に見える押せる物★＝行そのもの（押すと閉じる）＋2つ＝3つまで */
+    const row = panel.closest('.tc-punchrow');
+    const n = visBtns(pb.w, row).length;
+    ok(n <= 3, '★開いた行に 押せる物が ' + n + '個★（3つまで）');
+    console.log('     実測: 押せる行 ' + rowCount + '本／開いた行の押せる物 ' + n + '個');
+  });
+
+  /* ③ 時刻を直す → 候補 → 出す */
+  const fo = pb.w.document.getElementById('fix-open');
+  if (fo) fo.click();
+  await wait();
+  const c0 = pb.w.document.querySelector('[id^="fix-c"]');
+  if (c0) c0.click();
+  await wait();
+
+  T('★★「時刻を直す」を押してから 候補が出る／選ぶと1行 出て そこで初めて押せる★★', () => {
+    ok(c0, '★候補が出ていない★');
+    const box = pb.w.document.getElementById('fix-why');
+    ok(/に直します$/.test(box.textContent.trim()), '★出す前の1行が無い（または言葉が道と合っていない）★: ' + box.textContent);
+    const send = pb.w.document.getElementById('fix-send');
+    ok(!send.disabled, '★選んだのに押せない★');
+    ok(send.textContent.trim() === '直す', '★承認が要らないのに「お願い」と書いている★: ' + send.textContent);
+    /* ★出す物＝押すと記録が動く物★（行の「直す」は 開くだけなので数えない） */
+    const sends = visBtns(pb.w).filter((b) => /tc-btn/.test(b.className || '')
+      && /^(直す|会社に出す|お願いを出す)$/.test((b.textContent || '').trim()));
+    ok(sends.length === 1, '★出す物が ' + sends.length + '個★');
+    console.log('     実測: ' + box.textContent + '／出す物 ' + sends.length + '個（' + send.textContent + '）');
+  });
+
+  const sendBtn = pb.w.document.getElementById('fix-send');
+  if (sendBtn && !sendBtn.disabled) sendBtn.click();
+  await wait(); await wait();
+  T('★★「直す」を押すと その場で入る（お願いを作らない・元の行は消さない）★★', () => {
+    const ed = pb.fake._store.edit, req = pb.fake._store.fixReq;
+    ok(ed.length === 1, '★自分で直す道を通っていない★（' + ed.length + '件）');
+    ok(ed[0].p_at, '★新しい時刻を送っていない★');
+    ok(ed[0].p_id, '★どの打刻を直すのか渡していない★');
+    ok(req.length === 0, '★お願いも出している★: ' + req.length + '件');
+    ok(!pb.fake._calls.some((c) => /tc_punch\.delete/.test(c)), '★打刻を消している★');
+    console.log('     実測: 自分で直した 1件（新しい時刻つき）／お願い 0件／消した打刻 0本');
+  });
+
+  /* ④ ★同じ事をするボタンが2つ在ったら赤★ */
+  const pc = openPage('kiroku.html', T_URL, { punches: [['2026-08-17T09:00', 'in']] });
+  await wait(); await wait(); await wait();
+  T('★★同じ字のボタンが2つ出ていない（同じ事をする物を2か所に置かない）★★', () => {
+    [['閉じた画面', pc], ['08/17の画面', p]].forEach((pair) => {
+      const seen = {}, dup = [];
+      visBtns(pair[1].w).forEach((b) => {
+        const t = (b.textContent || '').trim();
+        if (!t) return;
+        if (seen[t]) dup.push(t); else seen[t] = 1;
+      });
+      ok(dup.length === 0, '★' + pair[0] + ' に同じ字のボタンが2つ: ' + dup.join(' / ') + '★');
+    });
+    const t = pc.w.document.getElementById('list').textContent;
+    ok(!/この出勤を取り消す/.test(t), '★取り消しの口が2つ在る★');
+    console.log('     実測: 同じ字のボタン 0件／取り消しの口は「これは間違い（取り消す）」1つ');
+  });
+
+  /* ⑤ あとから入れるを開くと 打刻の直しは閉じる（お願いを出すは1つのまま） */
+  pc.w.document.getElementById('b-addopen').click();
+  await wait();
+  T('★★「あとから入れる」を開いても 押す物は画面に1つ（言葉は「足す」）★★', () => {
+    const d2 = pc.w.document;
+    ok(!d2.getElementById('add-box').hidden, '開いていない');
+    const sends = visBtns(pc.w).filter((b) => /^(直す|消す|足す)$/.test((b.textContent || '').trim()));
+    ok(sends.length === 1, '★押す物が ' + sends.length + '個★');
+    ok(sends[0].textContent.trim() === '足す', '言葉が違う: ' + sends[0].textContent);
+    ok(/時刻を選んでください/.test(d2.getElementById('add-why').textContent), '押せない理由が出ていない');
+    console.log('     実測: 開いた後の押す物 ' + sends.length + '個（' + sends[0].textContent.trim() + '）');
+  });
+}
+/* ── ★★締めた月は 直せない（会社に言ってください）★★（2026-08-18 夜3 司さんの決まり）
+   ★給与が確定した後に 勤怠が動くと 計算が狂う★ので、締めた後だけは 押せない。 */
+{
+  const SEED = { punches: [['2026-08-17T09:00', 'in'], ['2026-08-17T18:00', 'out']], empClosed: true };
+  const T_URL2 = '?t=11111111-1111-1111-1111-111111111111';
+  const pA = openPage('kiroku.html', T_URL2, SEED);
+  await wait(); await wait(); await wait();
+  const rA = pA.w.document.querySelector('[data-pid]');
+  if (rA) rA.click();
+  await wait(); await wait();
+  const dropA = pA.w.document.getElementById('fix-drop');
+  if (dropA) dropA.click();
+  await wait(); await wait();
+
+  T('★★締めた月は 押しても入らない／理由を出す★★', () => {
+    const ed = pA.fake._store.edit, req = pA.fake._store.fixReq;
+    ok(ed.length === 0, '★締めた月なのに 倉庫へ送っている★（' + ed.length + '件）');
+    ok(req.length === 0, '★お願いの道が まだ生きている★（' + req.length + '件）');
+    const toast = (pA.w.document.querySelector('.tc-toast') || {}).textContent || '';
+    ok(/締めたので直せません/.test(toast), '★理由を出していない★: ' + toast);
+    console.log('     実測: 送った 0件／出た言葉「' + toast + '」');
+  });
+
+  T('★★締めた月は「足す」も押せない（理由つき）★★', () => {
+    const d2 = pA.w.document;
+    d2.getElementById('b-addopen').click();
+    ok(d2.getElementById('b-add').disabled, '★締めた月なのに 足せる★');
+    ok(/締めたので直せません/.test(d2.getElementById('add-why').textContent),
+      '理由が出ていない: ' + d2.getElementById('add-why').textContent);
+  });
+}
+
+/* ── ★社長の「承認する前に どうなるか」★（★使わない印のお願いも数に入る★・2026-08-18） ── */
+{
+  const p = openPage('index.html', '', { fixVoid: true });
+  await wait(); await wait(); await wait();
+  T('★★「この1本は使わない」お願いも 承認前に 数で見せる（0→0 に見せない）★★', () => {
+    const box = p.w.document.getElementById('pend').textContent;
+    const m = /元は (\d+)分 → 入れると (\d+)分/.exec(box);
+    ok(m, '★承認する前の数が出ていない★: ' + box.slice(0, 120));
+    ok(m[1] !== m[2], '★使わない印を数に入れていない（元と後が同じ）★: ' + m[0]);
+    console.log('     実測: ' + m[0]);
+  });
+
+}
+
+/* ★数字が動かない直し★（まだ退勤が入っていない日の「時刻の直し」）は
+   ★0分→0分 と出さずに 何が起きるかを言う★（2026-08-18 実配信で見た） */
+{
+  const day = '2026-08-03';
+  const p = openPage('index.html', '', { fixSame: true, sameDay: day, punches: [[day + 'T09:00', 'in']] });
+  await wait(); await wait(); await wait();
+  T('★★数字が動かない直しは「0分→0分」と出さない（何が起きるかを言う）★★', () => {
+    const t = p.w.document.getElementById('pend').textContent;
+    ok(!/元は 0分 → 承認すると 0分/.test(t), '★0→0 のまま出している★: ' + t.slice(0, 140));
+    ok(/数字は変わりません/.test(t), '★何が起きるかを言っていない★: ' + t.slice(0, 140));
+    ok(/まだ退勤が入っていません/.test(t), '理由が出ていない: ' + t.slice(0, 140));
+    const line = (t.split('\n').filter((x) => /数字は変わりません/.test(x))[0] || '').trim();
+    console.log('     実測: ' + line.slice(0, 100));
+  });
+}
+
+/* ── ★箱は2つ★（指示役 2026-08-18 夜）＝「もう入った物」と「まだの物」を混ぜない ──
+   ①「直した記録」        … もう入っている → ★押す物を出さない★
+   ②「まだ入っていません」… 承認前の古い分 → ［入れる］［入れない］
+   ★わざと混ぜたら 赤になる★ ところまで この場で試す（見張りが空振りしていない証拠）。 */
+{
+  /* ★混ざり方を数える道具★（この1本を 本物と 混ぜた物の両方に当てる） */
+  const mixCheck = (doc) => {
+    const bad = [];
+    const done = doc.getElementById('fixes');
+    const pend = doc.getElementById('pend');
+    const btns = done.querySelectorAll('button').length;
+    if (btns) bad.push('「直した記録」に押す物が ' + btns + '個');
+    if (/まだ入っていません|入れる|入れない/.test(done.textContent)) bad.push('「直した記録」に まだの物の言葉が入っている');
+    if (/本人が直した|入れた|入れなかった/.test(pend.textContent)) bad.push('「まだ入っていません」に もう入った物の言葉が入っている');
+    [].forEach.call(pend.querySelectorAll('.tc-card'), (c, i) => {
+      if (!c.querySelector('[data-ok]') || !c.querySelector('[data-ng]')) bad.push((i + 1) + '枚目に［入れる］［入れない］が無い');
+    });
+    return bad;
+  };
+  const num = (t) => { const m = /（(\d+)件）/.exec(t || ''); return m ? +m[1] : -1; };
+
+  const p = openPage('index.html', '', { fixBoth: true });
+  await wait(); await wait(); await wait();
+  const d = p.w.document;
+
+  T('★★社長の画面＝「直した記録」と「まだ入っていません」を 1つの箱に混ぜない★★', () => {
+    const bad = mixCheck(d);
+    ok(bad.length === 0, '★混ざっている★: ' + bad.join(' / '));
+    console.log('     実測: 直した記録 ' + d.getElementById('fixes').querySelectorAll('.tc-card').length
+      + '枚（押す物 ' + d.getElementById('fixes').querySelectorAll('button').length + '個）'
+      + '／まだ入っていません ' + d.getElementById('pend').querySelectorAll('.tc-card').length + '枚');
+  });
+
+  T('★★見出しに 件数を出す（①と②を それぞれ数える）★★', () => {
+    const h1 = d.getElementById('fixes-head'), h2 = d.getElementById('pend-head');
+    ok(!h1.hidden && !h2.hidden, '見出しが出ていない（' + h1.hidden + '/' + h2.hidden + '）');
+    ok(num(h1.textContent) === d.getElementById('fixes').querySelectorAll('.tc-card').length,
+      '★「直した記録」の件数が 中身と合っていない★: ' + h1.textContent);
+    ok(num(h2.textContent) === d.getElementById('pend').querySelectorAll('.tc-card').length,
+      '★「まだ入っていません」の件数が 中身と合っていない★: ' + h2.textContent);
+    console.log('     実測: ' + h1.textContent.trim() + '／' + h2.textContent.trim());
+  });
+
+  T('★★わざと混ぜたら 赤になる（この見張りは 空振りしていない）★★', () => {
+    const done = d.getElementById('fixes');
+    const keep = done.innerHTML;
+    done.insertAdjacentHTML('beforeend',
+      '<div class="tc-card pending"><div class="tc-cardhead"><span class="tc-tag pending">まだ入っていません</span>'
+      + '<button class="tc-btn" type="button" data-ok="x">入れる</button></div></div>');
+    const bad = mixCheck(d);
+    done.innerHTML = keep;
+    ok(bad.length >= 2, '★混ぜても 気づかない★（見つけた数 ' + bad.length + '）');
+    console.log('     実測: 混ぜたら ' + bad.length + '件 見つけた（' + bad[0] + ' …）');
+  });
+}
+
+/* ── ★「直した記録」は 読めるか★（2026-08-21 司さんが実機で開いて詰まった） ─────────
+   実機に出ていた物 … 「元は 0分 → 0分」／「理由: …は 間違いなので使いません」／
+                      「入れた」の札／★同じ 17:03 退勤 が2回★（4件と出ていた）
+   ⇒★言う事は1つだけ＝どの打刻を 数えないことにしたか★ */
+{
+  const p = openPage('index.html', '', { fixReal: true });
+  await wait(); await wait(); await wait();
+  const d2 = p.w.document;
+  T('★★「直した記録」は 1打刻＝1行（重なりを消す・数も直す）★★', () => {
+    const box = d2.getElementById('must5') && d2.getElementById('fixes');
+    const cards = [...d2.querySelectorAll('#fixes .tc-card')];
+    const rows = [...d2.querySelectorAll('#fixes .tc-card div')].map((x) => x.textContent.trim())
+      .filter((t) => /数えません/.test(t));
+    ok(cards.length === 1, '★同じ人・同じ日が ' + cards.length + '枚に分かれている（1枚のはず）★');
+    ok(rows.length === 3, '★行が ' + rows.length + '本（重なりを消して 3本のはず）★: ' + JSON.stringify(rows));
+    ok(new Set(rows).size === rows.length, '★同じ行が2回 出ている★: ' + JSON.stringify(rows));
+    const head = d2.getElementById('fixes-head').textContent;
+    ok(/（3件）/.test(head), '★見出しの数が 重なりを消した後になっていない★: ' + head);
+    console.log('     実測: 見出し「' + head.trim() + '」／' + JSON.stringify(rows));
+  });
+
+  T('★★「元は 0分 → 0分」「理由:」「入れた」を 出さない（何も言っていない物を消す）★★', () => {
+    const t = d2.getElementById('fixes').textContent;
+    ok(!/0分 → 0分/.test(t), '★動いていない数を出している★: ' + t.slice(0, 120));
+    ok(t.indexOf('理由:') < 0, '★「理由:」が残っている★');
+    ok(t.indexOf('入れた') < 0, '★「入れた」の札が残っている★');
+    ok(t.indexOf('間違いなので使いません') < 0, '★中の書き方が そのまま出ている★');
+    ok(/矢野|山田|太郎|さん|[一-龥]/.test(t), '名前が出ていない');
+    console.log('     実測: ' + t.replace(/\s+/g, ' ').trim().slice(0, 80));
+  });
+}
+
+/* ── ★「まだ入っていません」に 昔の書き方を刷らない★（2026-08-21 指示役・倉庫に残っている文） ──
+   作る所は消したが ★保存済みの文は 倉庫に残る★。人が書いた理由は そのまま出す。 */
+{
+  const p = openPage('index.html', '', { fixOldReason: true });
+  await wait(); await wait(); await wait();
+  T('★★倉庫に残っている「昔の書き方」は 刷らない（理由:の見出しも出さない）★★', () => {
+    const box = p.w.document.getElementById('pend');
+    const t = box.textContent;
+    ok(box.querySelectorAll('.tc-card').length === 1, '★その1件が出ていない★');
+    ok(t.indexOf('間違いなので使いません') < 0, '★昔の書き方を そのまま刷っている★: ' + t.slice(0, 140));
+    ok(t.indexOf('理由:') < 0, '★中身が無いのに「理由:」の見出しが出ている★: ' + t.slice(0, 140));
+    console.log('     実測: ' + t.replace(/\s+/g, ' ').trim().slice(0, 90));
+  });
+}
+
+{
+  /* ★人が書いた理由は 消さない★（全部 消していないか＝この見張りが空振りしていない証拠） */
+  const p = openPage('index.html', '', {});
+  await wait(); await wait(); await wait();
+  T('★★人が書いた理由（打ち忘れ）は そのまま出す（消しすぎていない）★★', () => {
+    const t = p.w.document.getElementById('pend').textContent;
+    ok(/理由: 打ち忘れ/.test(t), '★人が書いた理由まで消している★: ' + t.slice(0, 140));
+    /* ★機械が作った説明は「理由:」に出さない★（2026-08-21 指示役
+       「…を 13:47 に直します」が 理由の顔で出ていた＝★型を潰す★） */
+    ok(!/理由:[^]{0,40}(直します|直しました|足しました|消しました|使いません)/.test(t),
+      '★機械が作った説明が「理由:」に出ている★: ' + t.slice(0, 160));
+    console.log('     実測: ' + (/理由: [^\s]+/.exec(t) || [''])[0] + '（機械の文は 0件）');
+  });
+}
+
+/* ★古い分が 0件の時★＝②の箱は 見出しごと出さない（今どきの会社は ほぼ これ） */
+{
+  const p = openPage('index.html', '', { fixDoneOnly: true });
+  await wait(); await wait(); await wait();
+  T('★★もう「お願い」を出さない会社では ②の箱が出ない（0件なら 見出しごと消す）★★', () => {
+    const d = p.w.document;
+    const h2 = d.getElementById('pend-head');
+    ok(h2.hidden, '★0件なのに ②の見出しが出ている★: ' + h2.textContent);
+    ok(d.getElementById('pend').innerHTML === '', '★0件なのに ②の中身が残っている★');
+    ok(!d.getElementById('fixes-head').hidden, '①の見出しが出ていない');
+    ok(d.getElementById('fixes').querySelectorAll('button').length === 0,
+      '★本人が直した物に 押す物が出ている★');
+    console.log('     実測: ②は 見出しも中身も 0（①は ' + d.getElementById('fixes-head').textContent.trim()
+      + '・押す物 0個）');
   });
 }
 
@@ -589,12 +1384,18 @@ T('★★「出る」はタブと同じ形にしない・押しても1回 確認
   ok(/quiet/.test(out.className), '「出る」を目立たない形にしていない');
   /* ★タブの行の中に居ない★（ヘッダーへ移した） */
   ok(!out.closest('.tc-tabs'), '「出る」がまだタブの行に並んでいる');
-  /* 並びは 会社 → 従業員 → 一覧 → 集計（★月めくりの行と混ぜない★＝role=tablist の行だけ見る） */
+  /* 並びは 会社 → 従業員 → 今月の勤務（★月めくりの行と混ぜない★＝role=tablist の行だけ見る）
+     ★2026-08-16 から 集計へは タブの行ではなく 帯のいちばん右★
+     ＝★別のページへ移る物の置き場所を 全画面で1つに決めた★（司さん「戻るが集計の時だけ右上」） */
   const row = d.querySelector('.tc-tabs[role="tablist"]');
   ok(row, 'タブの行が見つからない');
   const order = [...row.children].map((e) => e.id).filter(Boolean);
-  ok(order.join(',') === 'tab-company,tab-people,tab-list,go-shukei',
+  ok(order.join(',') === 'tab-company,tab-people,tab-list',
     '並びが違う: ' + order.join(','));
+  const goShukei = d.getElementById('go-shukei');
+  ok(goShukei && goShukei.closest('.tc-appbar'), '★集計へが 帯の中に無い★');
+  ok(goShukei && !goShukei.closest('.tc-tabs'), '★集計へが タブの行に戻っている★');
+  ok(goShukei && goShukei.parentNode.lastElementChild === goShukei, '★集計へが 帯のいちばん右にない★');
   /* ★集計は別のページへ飛ぶ物だと分かる★ */
   const go = d.getElementById('go-shukei');
   ok(go.tagName === 'A' && /shukei\.html/.test(go.getAttribute('href')), '集計が飛び先を持っていない');

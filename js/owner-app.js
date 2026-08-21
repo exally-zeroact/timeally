@@ -19,6 +19,9 @@
   function q(id) { return d.getElementById(id); }
   function pad2(n) { return ('0' + n).slice(-2); }
   function thisYm() { return (DB.nowJst() || '2026-01').slice(0, 7); }
+  /* ★今日★ … 数える所へ渡すのは ★「今日はまだ働いている」を聞かない為だけ★。
+     lib/ は 時計を持たない（毎回 同じ答えになる）ので、画面が渡す。 */
+  function todayJst() { return (DB.nowJst() || '').slice(0, 10) || null; }
   function stamp() { return (DB.nowJst() || '').replace(/[-T:]/g, '').slice(0, 13).replace(/^(\d{8})(\d{4})$/, '$1_$2'); }
 
   /** ★ログインが切れていたら 入口へ送る★
@@ -37,10 +40,13 @@
     };
   }
 
-  function alertBox(id, msg) {
+  /** ★うまく行った時は 赤で出さない★（2026-08-16 司さんが本番で止まった）
+   *  ＝登録は成功しているのに 赤い箱に出ると ★失敗に見える★。ok=true で緑の箱にする。 */
+  function alertBox(id, msg, ok) {
     var el = q(id);
     if (!el) { U.toast(msg); return; }
     el.textContent = msg || '';
+    el.className = 'tc-alert' + (ok ? ' ok' : '');
     el.hidden = !msg;
   }
 
@@ -52,12 +58,22 @@
         global.location.href = 'index.html';
       });
     };
+    /* ★登録したら そのまま入る★（2026-08-16 司さんが本番の実機で止まった）
+       ★確認メールは 来ません★＝倉庫の設定が mailer_autoconfirm=true（指示役が実測）。
+       それなのに「メールが届いていたら…」と出していたので ★人が待ってしまった★。
+       ⇒ ①言葉を実物に合わせる ②赤で出さない ③★もう一度 打たせない（そのまま入る）★ */
     q('b-new').onclick = function () {
+      var email = q('email').value.trim();
       var pw = q('pw').value;
       if (pw.length < 8) { alertBox('alert', 'パスワードは8文字以上にしてください。'); return; }
-      DB.Auth.signUp(q('email').value.trim(), pw).then(function (r) {
+      DB.Auth.signUp(email, pw).then(function (r) {
         if (r.error) { alertBox('alert', '登録できませんでした（' + r.error.message + '）'); return; }
-        alertBox('alert', '登録しました。メールが届いていたら中のリンクを押してください。');
+        alertBox('alert', '登録しました。そのまま中へ入ります。', true);
+        /* 入れなかった時だけ ★次に押す物を1つだけ★言う（メールの話はしない） */
+        DB.Auth.signIn(email, pw).then(function (s) {
+          if (s.error) { alertBox('alert', '登録しました。そのまま「入る」を押してください。', true); return; }
+          global.location.href = 'index.html';
+        });
       });
     };
     q('b-reset').onclick = function () {
@@ -106,6 +122,17 @@
       q('b-next').onclick = function () { shiftYm(1); };
       q('b-addperson').onclick = addPerson;
       q('b-savecompany').onclick = saveCompany;
+      /* ★押した時だけ 出す物★（既定で使う人の画面を短くする・2026-08-16） */
+      q('b-round-ex').onclick = function () {
+        var ex = q('round-example');
+        ex.hidden = !ex.hidden;
+        q('b-round-ex').textContent = ex.hidden ? '例を見る' : '例を閉じる';
+      };
+      q('b-warn-more').onclick = function () {
+        var rest = q('round-warn-rest');
+        rest.hidden = !rest.hidden;
+        q('b-warn-more').textContent = rest.hidden ? 'くわしく' : '閉じる';
+      };
       ['c-round', 'c-runit', 'c-rdir', 'c-rscope'].forEach(function (id) {
         var el = q(id); if (el) el.onchange = drawRoundNote;
       });
@@ -145,8 +172,9 @@
       st.pinLog = r[3] || [];
       fillCompany();
       drawPeople();
+      drawHireAsk();
       return drawFixes(r[2] || []);
-    }).then(drawSummary)
+    }).then(drawSummary).then(drawMust5)
       .catch(failed('読めませんでした'));
   }
 
@@ -165,61 +193,102 @@
     };
   }
 
-  /* 直しのお願い（★未承認が上★）。★元は何分→何分★ を出してから承認する */
+  /* ★箱は2つ★（指示役 2026-08-18 夜「1つの箱に もう入った物と まだの物が混ざっている」）
+       ①「直した記録」  … ★もう入っている★＝★押す物を出さない★（誰が・いつ・何を だけ）
+       ②「まだ入っていません」… ★承認前の古い分だけ★＝［入れる］［入れない］
+     ★どちらも 0件なら 見出しごと出さない★（もう無い物のボタンを見せない）。
+     ★件数は 見出しに出す★（どちらの箱の話か 数で分かるように）。
+     ＝2026-08-18 司さんの決まり「自分の打刻は自分で直せる」により、
+       従業員は もう「お願い」を出さない（その場で入る）＝②は 古い分だけ。 */
   function drawFixes(fixes) {
-    var box = q('fixes');
-    if (!box) return Promise.resolve();
+    var box = q('fixes'), head = q('fixes-head');
+    var pbox = q('pend'), phead = q('pend-head');
+    if (!box || !pbox) return Promise.resolve();
     var pending = fixes.filter(function (f) { return f.status === 'pending'; });
-    var done = fixes.filter(function (f) { return f.status !== 'pending'; }).slice(0, 20);
-    if (!pending.length && !done.length) { box.innerHTML = '<div class="tc-note">お願いはありません。</div>'; return Promise.resolve(); }
+    /* ★入れなかった物は ここに並べない★（この箱は「入っている物」だけ＝混ぜない） */
+    var done = fixes.filter(function (f) { return f.status === 'approved'; }).slice(0, 40);
 
-    /* 承認する前に「今どうなっていて、承認すると何分になるか」を実際に数えて見せる */
+    /* ①もう入っている分＝★ボタンを出さない★
+       ★この箱が言う事は1つだけ＝「どの打刻を 数えないことにしたか」★（指示役 2026-08-21・司さんの実機）
+       ＝★「元は 0分 → 0分」も「理由:」も「入れた」の札も 出さない★（読む人が止まる）。
+         ★同じ人・同じ日は 頭に1回だけ★／★同じ打刻が2回 出たら 1行にまとめる★。 */
+    var lines = [];
+    done.forEach(function (f) {
+      var one = fixLine(f);
+      var key = f.employee_id + '|' + f.d + '|' + one;
+      if (lines.some(function (x) { return x.key === key; })) return;   /* 重なりを消す */
+      lines.push({ key: key, emp: f.employee_id, d: f.d, text: one });
+    });
+    if (head) { head.hidden = !lines.length; head.textContent = '直した記録（' + lines.length + '件）'; }
+    var groups = [];
+    lines.forEach(function (x) {
+      var g = groups.filter(function (y) { return y.emp === x.emp && y.d === x.d; })[0];
+      if (!g) { g = { emp: x.emp, d: x.d, items: [] }; groups.push(g); }
+      g.items.push(x.text);
+    });
+    box.innerHTML = groups.map(function (g) {
+      return '<div class="tc-card"><div class="tc-cardhead"><b>' + U.esc(nameOf(g.emp)) + '</b>'
+        + ' <span class="num">' + U.esc(mdDow(g.d)) + '</span></div>'
+        + g.items.map(function (t) { return '<div>' + U.esc(t) + '</div>'; }).join('') + '</div>';
+    }).join('');
+
+    /* ②まだ入っていない分 */
+    if (phead) { phead.hidden = !pending.length; phead.textContent = 'まだ入っていません（' + pending.length + '件）'; }
+    if (!pending.length) { pbox.innerHTML = ''; return Promise.resolve(); }
+
+    /* 入れる前に「今どうなっていて、入れると何分になるか」を実際に数えて見せる */
     return Promise.all(pending.map(function (f) {
       return Promise.all([
         DB.loadPunches(f.employee_id, f.d, f.d, { includePending: false }),
         DB.loadPunches(f.employee_id, f.d, f.d, { includePending: true }),
       ]).then(function (p) {
-        var before = one(p[0], f.d).workMin, after = one(p[1], f.d).workMin;
-        f._before = before; f._after = after;
+        /* ★「この1本は使わない」古い分★（2026-08-18）＝入れると その打刻が外れる。
+           ★外した姿で数えないと「元は0分 → 入れると0分」と出て 何も変わらないように見える★
+           （実際に変わるのは そこ）。★数えるのは いつもの summarize 1本のまま★。 */
+        var kill = f.void_ids || [];
+        var after = p[1].filter(function (x) { return kill.indexOf(x.id) < 0; });
+        var b4 = one(p[0], f.d), af = one(after, f.d);
+        f._before = b4.workMin;
+        f._after = af.workMin;
+        /* ★数字が動かない直しも在る★（2026-08-18 実配信で見た）
+           ＝まだ退勤が入っていない日の「時刻の直し」は 前も後も0分。
+           ★0→0 と出すと「何も起きない」に見える★ので、何が起きるのかを言う。 */
+        f._same = (b4.workMin === af.workMin);
+        f._open = !!(af.incomplete || af.undecided);
         return f;
       }).catch(function () { f._before = null; f._after = null; return f; });
     })).then(function (rows) {
-      box.innerHTML = rows.map(function (f) {
+      pbox.innerHTML = rows.map(function (f) {
         var name = nameOf(f.employee_id);
         return '<div class="tc-card pending"><div class="tc-cardhead">'
-          + '<b>' + U.esc(name) + '</b> <span class="num">' + U.esc(f.d) + '</span>'
-          + '<span class="tc-tag pending">未承認</span><span class="tc-spacer"></span>'
-          + '<button class="tc-btn" type="button" data-ok="' + U.esc(f.id) + '">承認する</button>'
-          + '<button class="tc-btn danger" type="button" data-ng="' + U.esc(f.id) + '">戻す</button>'
+          + '<b>' + U.esc(name) + '</b> <span class="num">' + U.esc(mdDow(f.d)) + '</span>'
+          + '<span class="tc-tag pending">まだ入っていません</span><span class="tc-spacer"></span>'
+          + '<button class="tc-btn" type="button" data-ok="' + U.esc(f.id) + '">入れる</button>'
+          + '<button class="tc-btn danger" type="button" data-ng="' + U.esc(f.id) + '">入れない</button>'
           + '</div><div>'
           + (f._before == null ? '（数えられませんでした）'
-            : '元は ' + f._before + '分 → 承認すると ' + f._after + '分')
-          + (f.reason ? '　理由: ' + U.esc(f.reason) : '') + '</div></div>';
-      }).join('') + done.map(function (f) {
-        return '<div class="tc-card"><div class="tc-cardhead"><b>' + U.esc(nameOf(f.employee_id)) + '</b>'
-          + ' <span class="num">' + U.esc(f.d) + '</span>'
-          + '<span class="tc-tag">' + (f.status === 'approved' ? '承認済' : '戻した') + '</span>'
-          + (f.approved_by === 'self' ? '<span class="tc-tag">自己承認</span>' : '')
-          + '</div><div>' + (f.before_min == null ? '' : '元は ' + f.before_min + '分 → ' + f.after_min + '分')
-          + (f.reason ? '　理由: ' + U.esc(f.reason) : '') + '</div></div>';
+            : !f._same ? '元は ' + f._before + '分 → 入れると ' + f._after + '分'
+              : f._open ? '数字は変わりません（この日は まだ退勤が入っていません）'
+                : '数字は変わりません（時刻の直し）')
+          + (showReason(f) ? '　理由: ' + U.esc(showReason(f)) : '') + '</div></div>';
       }).join('');
 
-      Array.prototype.forEach.call(box.querySelectorAll('[data-ok]'), function (b) {
+      Array.prototype.forEach.call(pbox.querySelectorAll('[data-ok]'), function (b) {
         b.onclick = function () {
           var f = rows.filter(function (x) { return x.id === b.getAttribute('data-ok'); })[0];
-          /* ★社長1人の会社は「自己承認」と残す（承認が無かった事にしない）★ */
+          /* ★社長1人の会社は「自分で入れた」と残す（誰がやったかを消さない）★ */
           var self = f && f.requested_by === 'owner';
           DB.client().from('tc_fix').update({ before_min: f._before, after_min: f._after })
             .eq('id', f.id).then(function () {
               return DB.approveFix(f.id, st.user.id, self);
-            }).then(function () { U.toast('承認しました'); reload(); })
+            }).then(function () { U.toast('入れました'); reload(); })
             .catch(failed('できませんでした'));
         };
       });
-      Array.prototype.forEach.call(box.querySelectorAll('[data-ng]'), function (b) {
+      Array.prototype.forEach.call(pbox.querySelectorAll('[data-ng]'), function (b) {
         b.onclick = function () {
           DB.rejectFix(b.getAttribute('data-ng'), st.user.id)
-            .then(function () { U.toast('戻しました'); reload(); })
+            .then(function () { U.toast('入れませんでした'); reload(); })
             .catch(failed('できませんでした'));
         };
       });
@@ -227,7 +296,7 @@
   }
 
   function one(punches, day) {
-    var s = global.TcCalc.summarize({ ym: day.slice(0, 7), punches: punches, shifts: [], fixes: [], company: coOpts() });
+    var s = global.TcCalc.summarize({ ym: day.slice(0, 7), punches: punches, shifts: [], fixes: [], company: coOpts(), today: todayJst() });
     return s.days.filter(function (x) { return x.d === day; })[0] || { workMin: 0 };
   }
   function nameOf(empId) {
@@ -247,12 +316,20 @@
         DB.loadShifts(p.employee_id, per.from, per.to),
       ]).then(function (r) {
         var s = global.TcCalc.summarize({
-          ym: st.ym, punches: r[0], shifts: r[1], fixes: [],
+          ym: st.ym, punches: r[0], shifts: r[1], fixes: [], today: todayJst(),
           company: Object.assign(coOpts(), { hourlyYen: p.hourly_yen, personHolidayDow: p.legal_holiday_dow }),
         });
         return { p: p, s: s };
       });
     })).then(function (rows) {
+      /* ★1つも打刻が無い月に 0:00 が並ぶ表を黙って出さない★（2026-08-16 司さん）
+         ＝入れたばかりの会社は ★必ずこの姿から始まる★。何をすればよいかを1行で言う。 */
+      var anyPunch = rows.some(function (x) { return x.s.month.shukkin > 0 || x.s.month.workedMin > 0; });
+      if (!anyPunch) {
+        box.innerHTML = '<div class="tc-note">' + U.esc(st.ym.replace('-', '年') + '月')
+          + ' は まだ打刻がありません。従業員が入口のリンクから打つと、ここに出ます。</div>';
+        return;
+      }
       /* ★割増が要る時数を 一覧にも出す★（うち60超＝50%・うち休日の深夜＝60%）
          ★0の人は空欄★（出ている人だけ目立たせる） */
       /* ★「気づき」の列は 2026-08-15 に外した★（司さんの決定）
@@ -275,31 +352,222 @@
     }).catch(failed('数えられませんでした'));
   }
 
-  /* ── ② 従業員（入口の発行・QR） ─────────────────────────────── */
-  function drawPeople() {
-    var box = q('people');
+  /* ── ★入社日を 1人ずつ聞く★（2026-08-19 指示役④-①） ─────────────────
+     ＝★入社日が空の人が 18人中14人★（実測）。空のままだと ★8割の人の有給が数えられない★。
+     ★聞いてあげる。埋めさせない★（全アプリの決まり）:
+       ・★別の画面を作らない★（従業員の画面の中で1問だけ）
+       ・★1問ごと保存★／★答えたら その場で結果（残り）を返す★
+       ・★空のままでも進める★（「あとで」）／★全員 入っていれば 箱ごと出さない★ */
+  var hireSkip = {};        /* 「あとで」を押した人（この画面を開いている間だけ後ろに回す） */
+  function hireLeft() {
+    return st.people.filter(function (p) { return !p.hire_date && !hireSkip[p.token]; });
+  }
+  function drawHireAsk() {
+    var box = q('hire-ask');
     if (!box) return;
-    if (!st.people.length) { box.innerHTML = '<div class="tc-note">まだ登録がありません。</div>'; return; }
-    box.innerHTML = st.people.map(function (p) {
-      var url = linkFor(p.token);
-      return '<div class="tc-card"><div class="tc-cardhead"><b>' + U.esc(p.name || p.employee_id) + '</b>'
-        + (p.pw_hash ? '<span class="tc-tag">暗証番号あり</span>' : '<span class="tc-tag pending">まだ決めていません</span>')
-        + '<span class="tc-spacer"></span>'
-        + '<button class="tc-btn sub" type="button" data-qr="' + U.esc(p.token) + '">QRを出す</button>'
-        + '<button class="tc-btn sub" type="button" data-re="' + U.esc(p.token) + '">入口を作り直す</button>'
+    var yet = st.people.filter(function (p) { return !p.hire_date; });
+    var list = hireLeft();
+    if (!list.length) {
+      box.hidden = true; box.innerHTML = '';
+      return;
+    }
+    box.hidden = false;
+    var p = list[0];
+    box.innerHTML = '<div class="tc-card"><div class="tc-cardhead">'
+      + '<b>' + U.esc(p.name || p.employee_id) + '</b>さんの入社日は？'
+      + '<span class="tc-spacer"></span>'
+      + '<span class="num">入社日が入っていない人 ' + yet.length + '人／' + st.people.length + '人</span>'
+      + '</div>'
+      + '<div class="tc-note">有給の残りを数えるのに使います。分かる時だけで大丈夫です。</div>'
+      + '<div id="hire-field"></div>'
+      + '<p><button class="tc-btn" id="b-hire-save" type="button">決める</button>'
+      + ' <button class="tc-btn quiet" id="b-hire-later" type="button">あとで</button></p>'
+      + '<div class="tc-note" id="hire-result" hidden></div></div>';
+    /* ★入れてよい範囲を 欄そのものに持たせる★（2026-08-21 指示役が 40120-02-01 を入れられた）
+       ＝★範囲の外は 決めさせない★／★入れた日は そのまま見える事★ */
+    q('hire-field').innerHTML = U.dateField('', 'OwnerApp._hirePreview()');
+    var hi = hireInput();
+    if (hi) { hi.min = HIRE_MIN; hi.max = todayJst(); }
+    q('b-hire-later').onclick = function () { hireSkip[p.token] = true; drawHireAsk(); };
+    q('b-hire-save').onclick = function () { saveHire(p); };
+    hirePreview();
+  }
+  function hireInput() {
+    var f = q('hire-field');
+    return (f && f.querySelector('.tc-date-input')) || null;
+  }
+  /** ★答えたら その場で返す★（保存する前に「その日なら こうなります」を見せる） */
+  /** ★入れてよい入社日の範囲★（外は 決めさせない）
+      ＝下は 1950-01-01（これより前の入社日は 実物では起きない）／上は 今日（未来の入社日は入れない）。
+        ★理由を出して 止める★＝黙って通して 倉庫に 4万年を入れない。 */
+  var HIRE_MIN = '1950-01-01';
+  function hireCheck(v) {
+    if (!v) return { ok: false, why: '' };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return { ok: false, why: 'その日付は入れられません' };
+    if (v < HIRE_MIN) return { ok: false, why: HIRE_MIN.slice(0, 4) + '年より前は入れられません' };
+    if (v > todayJst()) return { ok: false, why: '今日より後の日は入れられません' };
+    return { ok: true, why: '' };
+  }
+  function hirePreview() {
+    var el = q('hire-result'), inp = hireInput(), btn = q('b-hire-save');
+    if (!el || !inp) return;
+    var v = inp.value;
+    /* ★入れた日を そのまま見せる★（DOMに在る≠読める。日付の欄は 中身が見えないと直せない） */
+    var show = inp.parentNode && inp.parentNode.querySelector('.tc-date-show');
+    if (show) {
+      show.textContent = v || '日付を選ぶ';
+      show.className = 'tc-date-show' + (v ? '' : ' empty');
+    }
+    var g = hireCheck(v);
+    if (btn) btn.disabled = !g.ok;
+    if (!v) { el.hidden = true; el.textContent = ''; return; }
+    el.hidden = false;
+    if (!g.ok) { el.textContent = g.why; return; }
+    var y = global.TcLaw.yukyuLeft({ hireDate: v, today: todayJst(), takenDays: [] });
+    el.textContent = y.ok
+      ? 'この日なら 有給の残り ' + y.leftDays + '日（付与 ' + y.grantDays + ' ＋ 繰越 ' + y.carryDays + '）'
+      : y.why;
+  }
+  function saveHire(p) {
+    var inp = hireInput();
+    if (!inp || !inp.value) { U.toast('入社日を選んでください'); return; }
+    var g = hireCheck(inp.value);
+    if (!g.ok) { U.toast(g.why); return; }   /* ★範囲の外は 倉庫へ行かせない★ */
+    DB.updatePerson(p.token, { hire_date: inp.value })
+      .then(function () { U.toast((p.name || '') + 'さんの入社日を入れました'); reload(); })
+      .catch(failed('入れられませんでした'));
+  }
+
+  /* ── ★年5日★（2026-08-19 指示役④-②） ─────────────────────────
+     ★10日以上 付いた人だけ★に「あと◯日（期限 ◯年◯月◯日）」を出す。
+     ★判定は lib/tc-yukyu.js の1か所★（画面で日数を書かない＝法定の数を直書きしない）。
+     ★0人なら 見出しごと出さない★。 */
+  function drawMust5() {
+    var box = q('must5'), head = q('must5-head');
+    if (!box) return Promise.resolve();
+    if (!st.people.length) { box.innerHTML = ''; if (head) head.hidden = true; return Promise.resolve(); }
+    /* ★繰越（前の1年）まで見るので 2年ぶん読む★／★全員ぶんを1回で読む★ */
+    var to = todayJst();
+    var from = (Number(to.slice(0, 4)) - 2) + to.slice(4);
+    return DB.loadShiftsAll(from, to).then(function (rows) {
+      var byEmp = {};
+      rows.filter(function (x) { return x.dayKind === 'paid_leave'; })
+        .forEach(function (x) { (byEmp[x.employeeId] = byEmp[x.employeeId] || []).push(x.d); });
+      var hit = st.people.map(function (p) {
+        return { p: p, m: global.TcLaw.must5State({
+          hireDate: p.hire_date || null, today: to, takenDays: byEmp[p.employee_id] || [],
+        }) };
+      }).filter(function (x) { return x.m.target && x.m.needDays > 0; });
+      if (head) { head.hidden = !hit.length; head.textContent = '年5日（' + hit.length + '人）'; }
+      box.innerHTML = hit.map(function (x) {
+        return '<div class="tc-card"><div class="tc-cardhead">'
+          + '<b>' + U.esc(x.p.name || x.p.employee_id) + '</b>'
+          + '<span class="tc-spacer"></span>'
+          + '<span class="tc-tag pending">あと ' + x.m.needDays + '日</span></div>'
+          + '<div>期限 ' + U.esc(jpDate(x.m.byDate)) + '（いま ' + x.m.usedDays + '日）</div></div>';
+      }).join('');
+    }).catch(function () { /* 読めなくても 他の表示は止めない */ });
+  }
+  /** ★M/D（曜）★＝画面の中の日付は これ1つ（2026-08-21 指示役「1つに揃える」） */
+  function mdDow(iso) {
+    var t = String(iso || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+    return t.slice(5).replace('-', '/') + '（' + U.dowOf(t) + '）';
+  }
+
+  function jpDate(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+    return m ? (+m[1]) + '年' + (+m[2]) + '月' + (+m[3]) + '日' : String(iso || '');
+  }
+
+  /* ── ② 従業員（入口の発行・QR） ─────────────────────────────── */
+  /** ★従業員は 1人1行★（2026-08-16 司さん「増えるとごちゃごちゃ」）
+   *  前は 1人に 194px 使っていて ★390×844 の画面に2人しか入らなかった★（実測）。
+   *  ＝20人の会社では ★画面が20倍★になる。
+   *  ⇒ ★氏名＋状態＋「>」だけ★を並べ、★押した人の分だけ★中を開く。
+   *    長いURLは ★出さずに「リンクをコピー」1つ★（読ませる物ではないため）。 */
+  var peopleFilter = 'all';
+  function drawPeople() {
+    var box = q('people'), head = q('people-count'), tabs = q('people-filter');
+    if (!box) return;
+    if (!st.people.length) {
+      if (head) head.textContent = '';
+      if (tabs) tabs.hidden = true;
+      box.innerHTML = '<div class="tc-note">まだ登録がありません。下の「追加する」から1人ずつ作ります。</div>';
+      return;
+    }
+    var yet = st.people.filter(function (p) { return !p.pw_hash; }).length;
+    if (head) {
+      /* ★何の状態かが 一目で分かる言葉にする★（2026-08-16 司さん「ぜんぶとかまだって何」）
+         ＝この画面で見たいのは ★その人が もう打てるのか★の1点。 */
+      head.textContent = '従業員 ' + st.people.length + '人'
+        + (yet ? '（うち ' + yet + '人は まだ打てません）' : '（全員 打てます）');
+    }
+    if (tabs) {
+      tabs.hidden = false;
+      Array.prototype.forEach.call(tabs.querySelectorAll('[data-filter]'), function (b) {
+        var on = b.getAttribute('data-filter') === peopleFilter;
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+        b.onclick = function () { peopleFilter = b.getAttribute('data-filter'); drawPeople(); };
+      });
+    }
+    var list = st.people.filter(function (p) { return peopleFilter === 'yet' ? !p.pw_hash : true; });
+    if (!list.length) {
+      box.innerHTML = '<div class="tc-note">まだ打てない人はいません（全員 暗証番号を決めています）。</div>';
+      return;
+    }
+    box.innerHTML = list.map(function (p) {
+      var t = U.esc(p.token);
+      return '<div class="tc-row">'
+        + '<button class="tc-rowhead" type="button" data-open="' + t + '" aria-expanded="false">'
+        + '<span class="tc-rowname">' + U.esc(p.name || p.employee_id) + '</span>'
+        + (p.pw_hash ? '<span class="tc-tag">打てます</span>'
+          : '<span class="tc-tag pending">まだ打てません</span>')
+        + '<span class="tc-chev">›</span></button>'
+        + '<div class="tc-rowbody" id="row-' + t + '" hidden>'
+        + '<div class="tc-tabs">'
+        + '<button class="tc-btn sub" type="button" data-copy="' + t + '">リンクをコピー</button>'
+        + '<button class="tc-btn sub" type="button" data-qr="' + t + '">QRを出す</button>'
+        + '<button class="tc-btn sub" type="button" data-re="' + t + '">入口を作り直す</button>'
         + '</div>'
-        + '<div style="word-break:break-all">' + U.esc(url) + '</div>'
         /* ★いつ決めたかを出す★（身に覚えの無い日時なら 社長が気づける）
            秘密を1つに減らした分の埋め合わせ（司さん 2026-08-15） */
         + '<div class="tc-when">' + U.esc(pinHistoryOf(p)) + '</div>'
-        + '<div id="qr-' + U.esc(p.token) + '"></div></div>';
+        + '<div id="qr-' + t + '"></div></div></div>';
     }).join('');
+    Array.prototype.forEach.call(box.querySelectorAll('[data-open]'), function (b) {
+      b.onclick = function () {
+        var body = q('row-' + b.getAttribute('data-open'));
+        body.hidden = !body.hidden;
+        b.setAttribute('aria-expanded', body.hidden ? 'false' : 'true');
+      };
+    });
+    Array.prototype.forEach.call(box.querySelectorAll('[data-copy]'), function (b) {
+      b.onclick = function () { copyLink(b.getAttribute('data-copy')); };
+    });
     Array.prototype.forEach.call(box.querySelectorAll('[data-qr]'), function (b) {
       b.onclick = function () { showQr(b.getAttribute('data-qr')); };
     });
     Array.prototype.forEach.call(box.querySelectorAll('[data-re]'), function (b) {
       b.onclick = function () { reissue(b.getAttribute('data-re')); };
     });
+  }
+  /** ★リンクは「見せる物」ではなく「渡す物」★＝コピーだけできればよい。
+   *  ★コピーできない機械でも 行き止まりにしない★（できなければ その場に出す）。 */
+  function copyLink(token) {
+    var url = linkFor(token);
+    var nav = global.navigator;
+    if (nav && nav.clipboard && nav.clipboard.writeText) {
+      nav.clipboard.writeText(url).then(function () { U.toast('リンクをコピーしました'); },
+        function () { showLink(token, url); });
+      return;
+    }
+    showLink(token, url);
+  }
+  function showLink(token, url) {
+    var box = q('qr-' + token);
+    if (!box) { U.toast(url); return; }
+    box.innerHTML = '<div class="tc-note" style="word-break:break-all">' + U.esc(url) + '</div>';
   }
   function linkFor(token) {
     return global.location.href.replace(/[^/]*$/, '') + 'punch.html?t=' + token;
@@ -581,23 +849,30 @@
     var custom = q('round-custom');
     if (custom) custom.hidden = mode !== 'custom';
 
+    /* ★2行に収める★（2026-08-16 司さん「分かりにくい」・390pxで実測して3行だった） */
     var n = q('round-note');
-    if (n) {
-      n.textContent = '打った時刻そのもの（原本）は、どれを選んでも1分単位のまま残ります。'
-        + '変わるのは 集計の見せ方だけです。';
-    }
+    /* ★「見せ方」ではない★（2026-08-16 司さん）＝ここで決めるのは
+       ★会社の決まり（賃金を数える時の丸め方）★。打った時刻の原本は消えない、という話は
+       ★決まりの説明として★書く（「見せ方だけ」と言い切らない）。 */
+    if (n) n.textContent = '会社の決まりとして、賃金を数える時の丸め方を決めます。打った時刻そのもの（原本）は1分単位で残ります。';
 
     var law = LAW.roundingLegality(r);
-    var a = q('round-warn');
-    if (a) {
-      if (law.ok) { a.hidden = true; a.textContent = ''; } else {
+    var a = q('round-warn'), head = q('round-warn-head'), rest = q('round-warn-rest');
+    if (a && head && rest) {
+      if (law.ok) {
+        a.hidden = true; head.textContent = ''; rest.textContent = '';
+      } else {
         a.hidden = false;
-        a.textContent = law.code === 'day_cut'
-          ? 'これは法律の上ではできない扱いです　1日ごとに、一定時間に満たない労働時間を'
+        /* ★頭の1行＝結論だけ★／★続き＝理由と法律★（押すと出る） */
+        head.textContent = law.code === 'day_cut'
+          ? 'これは法律の上ではできない扱いです。'
+          : '認められている形とは違います。';
+        rest.textContent = law.code === 'day_cut'
+          ? '　1日ごとに、一定時間に満たない労働時間を'
             + '一律に切り捨てて その分の賃金を払わないのは 労働基準法違反になります'
             + '（労働時間は1分単位が原則）。選ぶことはできますが、'
             + '切り捨てた時間と金額を 集計の画面に必ず出します。'
-          : '認められている形とは違います　1か月の合計に当てる形で認められているのは、'
+          : '　1か月の合計に当てる形で認められているのは、'
             + '1時間未満の端数を ' + LAW.MONTH_FRACTION_HALF_MIN + '分で分ける物'
             + '（' + LAW.MONTH_FRACTION_HALF_MIN + '分未満は切り捨て・'
             + LAW.MONTH_FRACTION_HALF_MIN + '分以上は切り上げ）だけです。'
@@ -662,8 +937,10 @@
       st.ym = thisYm();
       q('b-prev').onclick = function () { shiftYm2(-1); };
       q('b-next').onclick = function () { shiftYm2(1); };
-      q('who').onchange = function () { st.who = q('who').value; drawShukei(); };
-      q('b-print').onclick = doPrint;
+      q('who').onchange = function () { st.who = q('who').value; st.dayIdx = null; drawShukei(); };
+      q('b-print').onclick = function () { doPrint(false); };
+      /* ★紙のとおりに見る★（刷らずに A4横のまま見せる・指で広げて読める） */
+      q('b-preview').onclick = function () { doPrint(true); };
       q('b-printall').onclick = doPrintAll;
       q('b-csv').onclick = doCsvDaily;
       q('b-kyuyo').onclick = doCsvMonthly;
@@ -695,6 +972,7 @@
     var y = +st.ym.slice(0, 4), m = +st.ym.slice(5, 7) + n;
     if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; }
     st.ym = y + '-' + pad2(m);
+    st.dayIdx = null;   /* ★月を変えたら 開いていた日は閉じる★（同じ番号の別の日を開かない） */
     drawShukei();
   }
 
@@ -709,24 +987,39 @@
       return;
     }
     var per = global.TcCalc.period(st.ym, (st.company && st.company.close_day) || 31);
-    q('period').textContent = '対象: ' + per.from + ' 〜 ' + per.to;
+    /* ★日付の書き方は 画面の中で1つ★（2026-08-21 指示役）＝M/D（曜） */
+    q('period').textContent = '対象: ' + mdDow(per.from) + ' 〜 ' + mdDow(per.to);
     DB.listCloseLog(st.ym).then(function (log) { st.closeLog = log || []; drawClose(); })
       .catch(failed('締めの記録を読めませんでした'));
+    /* ★有給の残りは「付けた日」を数えて出す★（2026-08-19・倉庫に残り日数の列は作らない）
+       ＝繰越は前の1年ぶんまで（時効2年）なので、★2年ぶん読む★。 */
+    var wide = { from: (Number(per.from.slice(0, 4)) - 2) + per.from.slice(4), to: per.to };
     Promise.all([
       DB.loadPunches(p.employee_id, per.from, per.to),
       DB.loadShifts(p.employee_id, per.from, per.to),
       DB.listFixes('approved'),
+      DB.loadShifts(p.employee_id, wide.from, wide.to),
     ]).then(function (r) {
+      st.yukyu = global.TcLaw.yukyuLeft({
+        hireDate: p.hire_date || null, today: todayJst(),
+        takenDays: (r[3] || []).filter(function (x) { return x.dayKind === 'paid_leave'; })
+          .map(function (x) { return x.d; }),
+      });
       st.sum = global.TcCalc.summarize({
-        ym: st.ym, punches: r[0], shifts: r[1],
+        ym: st.ym, punches: r[0], shifts: r[1], today: todayJst(),
         fixes: (r[2] || []).filter(function (f) { return f.employee_id === p.employee_id; })
-          .map(function (f) { return { d: f.d, beforeMin: f.before_min, afterMin: f.after_min, reason: f.reason, status: f.status }; }),
+          .map(function (f) {
+            return { d: f.d, beforeMin: f.before_min, afterMin: f.after_min, reason: f.reason,
+              status: f.status, requestedBy: f.requested_by, approvedBy: f.approved_by };
+          }),
         company: Object.assign(coOpts(), {
           hourlyYen: p.hourly_yen, grantDays: grantDaysOf(p), personHolidayDow: p.legal_holiday_dow,
         }),
       });
       renderTables(p);
       fillBreakDays();
+      /* ★押した後も 同じ日を開いたままにする★（押すたびに箱が閉じると 残りが読めない） */
+      if (st.dayIdx != null && st.sum && st.sum.days && st.sum.days[st.dayIdx]) drawDayBox(st.dayIdx);
     }).catch(failed('数えられませんでした'));
   }
 
@@ -755,7 +1048,7 @@
     var day = (st.sum.days || []).filter(function (x) { return x.d === (sel && sel.value); })[0];
     if (!day) { el.textContent = 'この月は 直せる日がありません。'; el.hidden = false; return; }
     el.hidden = false;
-    el.textContent = day.d + '　拘束 ' + U.minToHm(day.spanMin) + '／休憩 ' + day.breakMin + '分'
+    el.textContent = mdDow(day.d) + '　拘束 ' + U.minToHm(day.spanMin) + '／休憩 ' + day.breakMin + '分'
       + '（' + (BREAK_SRC_WORD[day.breakSrc] || day.breakSrc) + '）'
       + '／実労働 ' + U.minToHm(day.workMin);
 
@@ -766,8 +1059,8 @@
       box.hidden = !fixed.length;
       box.textContent = fixed.length
         ? '直した日: ' + fixed.map(function (x) {
-          return x.d.slice(5).replace('-', '/') + ' ' + x.breakMin + '分'
-            + (x.breakAt ? '（' + (DB.toJst(x.breakAt) || '').replace('T', ' ') + '）' : '');
+          return mdDow(x.d) + ' ' + x.breakMin + '分'
+            + (x.breakAt ? '（' + jstOf(x.breakAt) + '）' : '');
         }).join('　')
         : '';
     }
@@ -813,7 +1106,7 @@
     q('cstate').className = 'tc-state ' + c.tone;
     q('cwhen').textContent = c.state === 'closed'
       ? '確定: ' + jstOf(c.closedAt)
-      : (c.reopenedAt ? '解除: ' + jstOf(c.reopenedAt) : c.periodFrom + ' 〜 ' + c.periodTo);
+      : (c.reopenedAt ? '解除: ' + jstOf(c.reopenedAt) : mdDow(c.periodFrom) + ' 〜 ' + mdDow(c.periodTo));
 
     /* ★なぜ押せないか／なぜ気をつけるかは 1か所(why)から出す★ */
     var why = q('cwhy');
@@ -834,12 +1127,13 @@
       ? '例: 打刻漏れが見つかったため' : '例: 8月分として給与へ渡すため（空でも可）';
 
     /* ★記録は消さない＝全部そのまま出す★ */
-    q('chist').innerHTML = c.history.length
-      ? c.history.slice().reverse().map(function (r) {
-        return '<span class="tc-histrow">' + U.esc(jstOf(r.at)) + '　'
-          + U.esc(global.TcClose.describe(r)) + (r.by_name ? '　' + U.esc(r.by_name) : '') + '</span>';
-      }).join('')
-      : '';
+    /* ★人の言葉を持っていない記録は 描かない★（tc-close が空を返す＝出さない印） */
+    q('chist').innerHTML = c.history.slice().reverse().map(function (r) {
+      var word = global.TcClose.describe(r);
+      if (!word) return '';
+      return '<span class="tc-histrow">' + U.esc(jstOf(r.at)) + '　'
+        + U.esc(word) + (r.by_name ? '　' + U.esc(r.by_name) : '') + '</span>';
+    }).join('');
 
     /* ★渡す口は 確定していない限り閉じる★（古い数字を配らない） */
     ['b-csv', 'b-kyuyo', 'b-xlsx'].forEach(function (id) {
@@ -850,7 +1144,13 @@
     });
   }
   function closeRowExists() { return (st.closeLog || []).some(function (r) { return r.action === 'close'; }); }
-  function jstOf(iso) { var v = DB.toJst(iso); return v ? v.replace('T', ' ') : ''; }
+  /** ★いつ やったか（日付＋時刻）★も 日付の形は M/D に揃える（2026-08-21 指示役）
+      ＝画面の中に「2026-08-15 10:00」と「08/15」の2通りを作らない。 */
+  function jstOf(iso) {
+    var v = DB.toJst(iso);
+    if (!v) return '';
+    return v.slice(5, 10).replace('-', '/') + ' ' + v.slice(11, 16);
+  }
 
   function askClose(kind) {
     st.ask = kind;
@@ -915,7 +1215,7 @@
         return {
           p: p,
           s: global.TcCalc.summarize({
-            ym: st.ym, punches: r[0], shifts: r[1], fixes: [],
+            ym: st.ym, punches: r[0], shifts: r[1], fixes: [], today: todayJst(),
             company: Object.assign(coOpts(), { hourlyYen: p.hourly_yen, personHolidayDow: p.legal_holiday_dow }),
           }),
         };
@@ -963,18 +1263,25 @@
      a: 省略＝右 / 'l' / 'c'
      ★有給・欠勤は「件数」なので右★（1文字に見えるが 合計行では 2 のような数になる。
       ★上下の桁が縦に揃う方を採る★） */
+  /* g … ★仲間の名前★（1段目の見出しと同じ）。
+     ★スマホでは 仲間ごと まるごと隠す★（2026-08-16 司さん「横スクロールせずに見せられないか」）
+     ＝1列ずつ隠すと ★1段目の見出しの colspan と数が合わなくなって 表がずれる★。
+     ★仲間ごとなら 何列 隠しても 2段の見出しが崩れない★。
+     紙（A4横）では ★17列 全部 出す★（隠すのは 狭い画面だけ）。 */
   var DAILY_COLS = [
-    { k: '日付', w: 4 }, { k: '曜日', w: 3, a: 'c' },
-    { k: '出勤', w: 6 }, { k: '退勤', w: 6 },
-    { k: '休憩', w: 5 }, { k: '中抜け', w: 5, z: true },
-    { k: '実労働', w: 7 },
+    { k: '日付', w: 4, g: 'hi' }, { k: '曜日', w: 3, a: 'c', g: 'hi' },
+    { k: '出勤', w: 6, g: 'da' }, { k: '退勤', w: 6, g: 'da' },
+    { k: '休憩', w: 5, g: 'hk' }, { k: '中抜け', w: 5, z: true, g: 'hk' },
+    { k: '実労働', w: 7, g: 'jr' },
     /* ★所定超は0が並びやすい★ので0なら空欄（所定内と法定外残業は 0にも意味がある＝出す） */
-    { k: '所定内', w: 6 }, { k: '所定超', w: 6, z: true }, { k: '法定外残業', w: 7 },
-    { k: '深夜', w: 6, z: true }, { k: '休日', w: 6, z: true },
-    { k: '遅刻', w: 5, z: true }, { k: '早退', w: 5, z: true },
-    { k: '有給', w: 4, z: true }, { k: '欠勤', w: 4, z: true },
-    { k: '備考', w: 15, a: 'l' },
+    { k: '所定内', w: 6, g: 'uw' }, { k: '所定超', w: 6, z: true, g: 'uw' }, { k: '法定外残業', w: 7, g: 'uw' },
+    { k: '深夜', w: 6, z: true, g: 'wm' }, { k: '休日', w: 6, z: true, g: 'wm' },
+    { k: '遅刻', w: 5, z: true, g: 'st' }, { k: '早退', w: 5, z: true, g: 'st' },
+    { k: '有給', w: 4, z: true, g: 'st' }, { k: '欠勤', w: 4, z: true, g: 'st' },
+    { k: '備考', w: 15, a: 'l', g: 'bk' },
   ];
+  /* ★狭い画面で出す仲間★（日・打刻・実労働＝5列）。他は「紙のとおりに見る」で全部 見える */
+  var PHONE_GROUPS = ['hi', 'da', 'jr'];
   /** ★中身の揃えを決めるのは この1本だけ★（中身も合計行も ここから取る＝食い違わない） */
   function alignOf(c) { return c.a === 'l' ? 'l' : c.a === 'c' ? 'c' : 'num'; }
   /** ★見出し（列の名前）は 中身に関係なく 中央★（2026-08-15 司さんの指摘で訂正）
@@ -982,8 +1289,8 @@
       ※数字の列は ★等幅のまま★（見出しの字も同じ書体で並ぶ） */
   function headAlignOf(c) { return alignOf(c) === 'num' ? 'c num' : 'c'; }
   /* 1段目の見出し（何の仲間か）。colspan の合計は 17 */
-  var DAILY_GROUPS = [['日', 2], ['打刻', 2], ['引いた分', 2], ['実労働', 1],
-    ['内訳', 3], ['割増', 2], ['その他', 4], ['備考', 1]];
+  var DAILY_GROUPS = [['日', 2, 'hi'], ['打刻', 2, 'da'], ['引いた分', 2, 'hk'], ['実労働', 1, 'jr'],
+    ['内訳', 3, 'uw'], ['割増', 2, 'wm'], ['その他', 4, 'st'], ['備考', 1, 'bk']];
   /* 1列だけの仲間（1段目に縦2行で置くので、2段目には出さない） */
   var SOLO = DAILY_GROUPS.filter(function (g) { return g[1] === 1; }).map(function (g) { return g[0]; });
 
@@ -993,6 +1300,24 @@
   }
   var blank = function (v) { return v === '0:00' || v === '' || v === 0 || v == null ? '' : v; };
 
+  /** ★1日ぶんの「描く文字」を作るのは この1本だけ★
+   *  表（17列）も 紙も ★カレンダー★も、★ここが返した同じ文字★を並べる。
+   *  ＝別々に作ると ★表とカレンダーで数字が食い違う★（それを起こさない作りにする）。 */
+  function dayValues(d, crossMonth) {
+    var CSV = global.TcCsv;
+    return [
+      dayLabel(d.d, crossMonth), U.DOW[d.dow],
+      d.inAt ? d.inAt.slice(11) : '', d.outAt ? d.outAt.slice(11) : '',
+      CSV.hhmm(d.breakMin), CSV.hhmm(d.awayMin), CSV.hhmm(d.workMin),
+      CSV.hhmm(d.stdMin), CSV.hhmm(d.overStdMin), CSV.hhmm(d.otMin),
+      CSV.hhmm(d.nightMin), CSV.hhmm(d.holidayMin),
+      d.lateMin == null ? '' : CSV.hhmm(d.lateMin),
+      d.earlyMin == null ? '' : CSV.hhmm(d.earlyMin),
+      d.dayKind === 'paid_leave' ? '1' : '', d.dayKind === 'absent' ? '1' : '',
+      CSV.note(d),
+    ];
+  }
+
   /** ★日ごとの表の中身を作るのは1本だけ★（画面も紙も同じ物を見る）
       ★見出しは <thead> に入れる★＝紙が2枚になった時に ★2枚目にも見出しが出る★ */
   function dailyInner(s) {
@@ -1001,22 +1326,12 @@
     var sum = { 休憩: 0, 中抜け: 0, 実労働: 0, 所定内: 0, 所定超: 0, 法定外残業: 0, 深夜: 0, 休日: 0,
       遅刻: 0, 早退: 0 };
 
-    var body = (s.days || []).map(function (d) {
+    var body = (s.days || []).map(function (d, di) {
       sum['休憩'] += d.breakMin; sum['中抜け'] += d.awayMin; sum['実労働'] += d.workMin;
       sum['所定内'] += d.stdMin; sum['所定超'] += d.overStdMin; sum['法定外残業'] += d.otMin;
       sum['深夜'] += d.nightMin; sum['休日'] += d.holidayMin;
       sum['遅刻'] += (d.lateMin || 0); sum['早退'] += (d.earlyMin || 0);
-      var v = [
-        dayLabel(d.d, crossMonth), U.DOW[d.dow],
-        d.inAt ? d.inAt.slice(11) : '', d.outAt ? d.outAt.slice(11) : '',
-        CSV.hhmm(d.breakMin), CSV.hhmm(d.awayMin), CSV.hhmm(d.workMin),
-        CSV.hhmm(d.stdMin), CSV.hhmm(d.overStdMin), CSV.hhmm(d.otMin),
-        CSV.hhmm(d.nightMin), CSV.hhmm(d.holidayMin),
-        d.lateMin == null ? '' : CSV.hhmm(d.lateMin),
-        d.earlyMin == null ? '' : CSV.hhmm(d.earlyMin),
-        d.dayKind === 'paid_leave' ? '1' : '', d.dayKind === 'absent' ? '1' : '',
-        CSV.note(d),
-      ];
+      var v = dayValues(d, crossMonth);
       /* ★打刻が1つも無い日は 数字を全部 空欄にする★（2026-08-15 指示役の指摘）
          ＝有給・欠勤の日に 0:00 が4つ並んで読みにくかった。印（有給1／欠勤1）だけ残す。
          ★打刻が在って結果が0の日は 0:00 のまま★（＝★数えた結果の0★。
@@ -1024,27 +1339,30 @@
       var noPunch = !d.inAt && !d.outAt;
       /* ★土日と法定休日は薄い網★（紙で見分けが付く。画面のCSSには足さない） */
       var cls = d.isLegalHoliday || d.dow === 0 || d.dow === 6 ? ' class="rest"' : '';
-      return '<tr' + cls + '>' + DAILY_COLS.map(function (c, i) {
+      /* ★広い画面でも 行を押したら その日の箱を開く★（カレンダーと同じ番号・同じ箱） */
+      return '<tr' + cls + ' data-day="' + di + '">' + DAILY_COLS.map(function (c, i) {
         var t = v[i];
         if (noPunch && c.k !== '日付' && c.k !== '曜日' && c.k !== '有給' && c.k !== '欠勤' && c.k !== '備考') t = '';
-        return '<td class="' + alignOf(c) + '">' + U.esc(c.z ? blank(t) : t) + '</td>';
+        return '<td class="' + alignOf(c) + ' g-' + c.g + '">' + U.esc(c.z ? blank(t) : t) + '</td>';
       }).join('') + '</tr>';
     }).join('');
 
-    return '<colgroup>' + DAILY_COLS.map(function (c) { return '<col style="width:' + c.w + '%">'; }).join('') + '</colgroup>'
+    return '<colgroup>' + DAILY_COLS.map(function (c) {
+      return '<col class="g-' + c.g + '" style="width:' + c.w + '%">';
+    }).join('') + '</colgroup>'
       + '<thead>'
       /* ★1列だけの仲間は 上下に同じ字を2回 出さない★（縦につなげる） */
       /* ★1列だけの仲間は その列と同じ揃え★（縦につなぐので 見出しと中身が同じ列になる）
          ★何列かにまたがる見出しは 中央★＝「どれか1列の中身」ではないので この決まりの外
          （検査も またぐ見出しは数えない） */
       + '<tr>' + DAILY_GROUPS.map(function (g) {
-        if (g[1] !== 1) return '<th colspan="' + g[1] + '" class="grp">' + U.esc(g[0]) + '</th>';
+        if (g[1] !== 1) return '<th colspan="' + g[1] + '" class="grp g-' + g[2] + '">' + U.esc(g[0]) + '</th>';
         var col = DAILY_COLS.filter(function (c) { return c.k === g[0]; })[0] || {};
-        return '<th rowspan="2" class="' + headAlignOf(col) + '">' + U.esc(g[0]) + '</th>';
+        return '<th rowspan="2" class="' + headAlignOf(col) + ' g-' + g[2] + '">' + U.esc(g[0]) + '</th>';
       }).join('') + '</tr>'
       /* ★見出しは中央★（表の見出しは中央が普通・2026-08-15 訂正） */
       + '<tr>' + DAILY_COLS.filter(function (c) { return SOLO.indexOf(c.k) < 0; }).map(function (c) {
-        return '<th class="' + headAlignOf(c) + '">' + U.esc(c.k) + '</th>';
+        return '<th class="' + headAlignOf(c) + ' g-' + c.g + '">' + U.esc(c.k) + '</th>';
       }).join('') + '</tr>'
       + '</thead><tbody>' + body + '</tbody>'
       /* ★合計行★（日ごとの表だけで 月計と突き合わせられる） */
@@ -1053,7 +1371,7 @@
       /* ★合計行も 上の列と同じ揃え★（桁が縦にぴったり重なる） */
       + '<tfoot><tr><th class="l" colspan="4">合計</th>'
       + DAILY_COLS.slice(4).map(function (c) {
-        var a = ' class="' + alignOf(c) + '"';
+        var a = ' class="' + alignOf(c) + ' g-' + c.g + '"';
         if (c.k === '有給') return '<td' + a + '>' + U.esc(s.month.yukyu || '') + '</td>';
         if (c.k === '欠勤') return '<td' + a + '>' + U.esc(s.month.kekkin || '') + '</td>';
         if (sum[c.k] == null) return '<td' + a + '></td>';
@@ -1061,15 +1379,224 @@
       }).join('') + '</tr></tfoot>';
   }
 
+  /** ★カレンダー（締め期間）★ 2026-08-17 司さんの決定
+   *  ・★暦月ではなく 締め期間★（締め日の翌日 〜 締め日）。★締め日が いつも最後のマス★
+   *  ・★曜日は日〜土の7列で固定★／★期間の外のマスは 空・薄く・押せない★
+   *  ・★1つのマスに出すのは「1つの値」＋「地の網」＋「締めの線」まで★（重ねない）
+   *  ・★印は3つ＋締め日★
+   *      ？＝打刻が片方だけ（直さないと数字が出ない）／有・欠＝有給・欠勤／
+   *      網＝休み（★濃い網＝法定休日／薄い網＝土日★＝35%が付く日を見分ける）／締＝締め日
+   *  ・★数字は 表と同じ dayValues() から取る★（作り直さない）
+   */
+  function calInner(s) {
+    var days = s.days || [];
+    if (!days.length) return '';
+    var crossMonth = s.period.from.slice(0, 7) !== s.period.to.slice(0, 7);
+    var head = U.DOW.map(function (w, i) {
+      return '<div class="cal-h' + (i === 0 ? ' sun' : i === 6 ? ' sat' : '') + '">' + w + '</div>';
+    }).join('');
+    /* ★先頭の空きマス★（1日目の曜日ぶん・押せない） */
+    var cells = [];
+    for (var i = 0; i < days[0].dow; i++) cells.push('<div class="cal-c out"></div>');
+    days.forEach(function (d, idx) {
+      var v = dayValues(d, crossMonth);
+      /* ★打刻が片方だけ★／★同じ時刻に出勤と退勤が並んで決められない★ … どちらも「？」
+         ★決められない日を「−（打刻なし）」に見せない★（打刻は在る。決まっていないだけ） */
+      var half = (!!d.inAt) !== (!!d.outAt) || d.undecided;
+      var main = half ? '？'
+        : d.dayKind === 'paid_leave' ? '有'
+          : d.dayKind === 'absent' ? '欠'
+            : (d.inAt || d.outAt) ? v[6]            /* 実労働（表と同じ文字） */
+              : '−';
+      /* ★月は「またぐ時」だけ、しかも 期間の頭と 月が変わる日だけ★（7/21・8/1）
+         ＝7列のマスに毎日 月を書くと 数字が読めない。紙は今までどおり全部に月を出す。 */
+      var newMonth = idx > 0 && d.d.slice(5, 7) !== days[idx - 1].d.slice(5, 7);
+      var label = (crossMonth && (idx === 0 || newMonth))
+        ? (+d.d.slice(5, 7)) + '/' + (+d.d.slice(8, 10)) : String(+d.d.slice(8, 10));
+      var cls = 'cal-c';
+      if (d.isLegalHoliday) cls += ' rest-h';        /* ★濃い網＝法定休日★ */
+      else if (d.dow === 0 || d.dow === 6) cls += ' rest-w'; /* ★薄い網＝土日★ */
+      if (half) cls += ' fix';
+      if (newMonth) cls += ' newmonth';
+      if (idx === days.length - 1) cls += ' shime';
+      return cells.push('<button type="button" class="' + cls + '" data-day="' + idx + '"'
+        + ' aria-selected="false">'
+        + '<span class="d">' + U.esc(label) + '</span>'
+        + '<span class="h' + (main === '−' ? ' none' : '') + '">' + U.esc(main) + '</span>'
+        + (idx === days.length - 1 ? '<span class="sh">締</span>' : '')
+        + '</button>');
+    });
+    return '<div class="cal-g head">' + head + '</div><div class="cal-g">' + cells.join('') + '</div>';
+  }
+
+  /** ★その日の結論を1行★（2026-08-18 指示役）
+   *  ★「08/17 は 08:00〜17:03（実労働 8:03）として数えます」★ を必ず出す。
+   *  ★決められない日は「決められません」と 理由まで出す★
+   *    ＝勝手に0にしない・黙って空にしない（★空になって合計が黙って小さくなる★を作らない）。
+   *  ★言葉は lib/tc-clean.js が持つ★（従業員の画面と同じ文＝食い違わない）。
+   *  ★長さを足すのは 社長の画面だけ★（従業員には時刻しか出さない）。 */
+  function dayLine(d) {
+    var CL = global.TcClean, CSV = global.TcCsv;
+    var info = {
+      undecided: d.undecided, asks: d.asks || [],
+      pairs: d.inAt ? [{ inAt: d.inAt, outAt: d.outAt }] : [],
+    };
+    var s = CL.daySentence(info, d.d);
+    if (!d.undecided && d.inAt && d.outAt) {
+      /* ★前の空白ごと差し替える★（残すと「18:00 （実労働…」と 1つ空きが出る＝実配信で見た） */
+      s = s.replace(' として記録します', '（実労働 ' + CSV.hhmm(d.workMin) + '）として数えます');
+    }
+    var more = (d.asks || []).filter(function (a) { return a.type !== 'both'; })
+      .map(function (a) { return a.text; }).join(' / ');
+    return '<div class="tc-note' + (d.undecided ? ' warn' : '') + '">' + U.esc(s)
+      + (more ? '<br>' + U.esc(more) : '')
+      + ((d.asks || []).length ? '<br>本人が自分の画面で答えると、その場で直ります。' : '')
+      + (d.merged ? '<br>' + U.esc('同じ時刻を2回 押した打刻が ' + d.merged + '本あります（数えていません・記録は残っています）') : '')
+      + '</div>';
+  }
+
+  /** ★押した日の中身★（★17項目を 仲間ごと・1カラム・ラベル左/値右★）
+   *  ★どの列も見られる／その日に無い物は出さない★（値が1つも無い仲間は 見出しごと出さない）
+   *  ★実労働だけは いつも出す★（0でも その日の答え） */
+  function drawDayBox(idx) {
+    var box = q('cal-day');
+    var s = st.sum;
+    if (!box || !s || !s.days || !s.days[idx]) return;
+    var d = s.days[idx];
+    var crossMonth = s.period.from.slice(0, 7) !== s.period.to.slice(0, 7);
+    var v = dayValues(d, crossMonth);
+    /* ★表・紙と同じ見せ方にする★（2026-08-17）
+       ＝打刻が1つも無い日は 表では数字を空欄にしている。ここだけ 0:00 を出すと
+       ★同じ日の同じ項目が 画面によって違う★事になる。★実労働は「−」★（マスと同じ字）。 */
+    var noPunch = !d.inAt && !d.outAt;
+    if (noPunch) {
+      DAILY_COLS.forEach(function (c, i) {
+        if (c.k === '日付' || c.k === '曜日' || c.k === '有給' || c.k === '欠勤' || c.k === '備考') return;
+        v[i] = c.k === '実労働' ? '−' : '';
+      });
+    }
+    var at = 0, html = '';
+    DAILY_GROUPS.forEach(function (g) {
+      var cols = DAILY_COLS.slice(at, at + g[1]);
+      at += g[1];
+      if (g[2] === 'hi') return;                     /* 日付・曜日は 見出しに出す */
+      /* ★出す／出さないの決まりは 表と同じ物を使う★（2026-08-17 見張りが食い違いを捕まえた）
+         ＝表は「0にも意味がある列（所定内・法定外残業・実労働）」を 0:00 のまま出している。
+         ここで独自に「0:00は消す」とすると ★同じ日の同じ項目が 画面によって違う★。
+         ⇒ ★c.z（0なら空欄にしてよい列）★ だけを 0で落とす。 */
+      var lines = cols.map(function (c) {
+        return { k: c.k, z: c.z, v: v[DAILY_COLS.indexOf(c)] };
+      }).filter(function (x) {
+        if (x.k === '実労働') return true;           /* ★実労働は いつも出す★ */
+        return (x.z ? blank(x.v) : x.v) !== '';
+      });
+      if (!lines.length) return;                     /* ★空の仲間は 見出しごと出さない★ */
+      html += '<div class="day-g">' + U.esc(g[0]) + '</div>'
+        + lines.map(function (x) {
+          return '<div class="day-l"><span class="k">' + U.esc(x.k) + '</span>'
+            + '<span class="v">' + U.esc(x.v) + '</span></div>';
+        }).join('');
+    });
+    box.innerHTML = '<div class="day-h">' + U.esc(v[0]) + '（' + U.esc(v[1]) + '）'
+      + (d.isLegalHoliday ? '　法定休日' : '') + '</div>' + dayLine(d) + html + yukyuInner(d);
+    box.hidden = false;
+    box.classList.add('open');   /* ★広い画面でも出す★（CSSはこの印だけを見る） */
+    st.dayIdx = idx;
+    var yb = box.querySelector('[data-yk]');
+    if (yb) yb.onclick = function () { saveDayKind(d.d, yb.getAttribute('data-yk')); };
+    Array.prototype.forEach.call(q('cal').querySelectorAll('[data-day]'), function (b) {
+      b.setAttribute('aria-selected', String(Number(b.getAttribute('data-day')) === idx));
+    });
+  }
+
+  /* ── ★有給を 付ける／外す★（2026-08-19 司さんの決まりの続き） ─────────────
+     ★新しい画面を作らない★＝日を押した箱に 押す物を1つだけ足す。
+     ★今の状態で押せる物しか出さない★（有給の日は「やめる」だけ・そうでない日は「にする」だけ）。
+     ★締めた後は出さない★（理由は締めの1か所から聞く＝2画面で答えが割れない）。
+     ★残りは その場で返す★（付与＋繰越−使った の3つを そのまま見せる）。 */
+  function yukyuInner(d) {
+    var y = st.yukyu || { ok: false, why: '' };
+    var isY = d.dayKind === 'paid_leave';
+    var c = st.close || closeState();
+    /* ★他の仲間と同じ形（見出し＋行）で出す★＝説明文だけの箱を作らない */
+    var line = y.ok
+      ? y.leftDays + '日（付与 ' + y.grantDays + ' ＋ 繰越 ' + y.carryDays
+        + ' − 使った ' + y.usedDays + '）'
+      : 'まだ数えられません（' + y.why + '）';
+    var btn = c.state === 'closed'
+      ? '<div class="tc-note">' + U.esc(c.why.requestFix) + '</div>'
+      : '<button class="tc-btn' + (isY ? ' danger' : '') + '" type="button" data-yk="'
+        + (isY ? 'work' : 'paid_leave') + '">' + (isY ? '有給をやめる' : '有給にする') + '</button>';
+    return '<div class="day-g">有給</div>'
+      + (isY ? '<div class="day-l"><span class="k">この日</span><span class="v">有給です</span></div>' : '')
+      + '<div class="day-l"><span class="k">残り</span><span class="v">' + U.esc(line) + '</span></div>'
+      + btn;
+  }
+
+  /** ★倉庫に残っている「昔の書き方」は 人に見せない★（2026-08-21 指示役）
+   *  ＝作る所は もう消したが、★前に保存された文は 倉庫に残っている★。
+   *    「8/17 の 08:00 出勤 は 間違いなので使いません」＝★やった事★であって理由ではないので
+   *    ★刷らない★（見出しの「理由:」も 中身が空なら 出ない）。
+   *    ★人が書いた理由（打ち忘れ など）は そのまま出す★。 */
+  /** ★「理由:」に出すのは 人が書いた言葉だけ★（2026-08-21 指示役）
+   *  ＝前は 機械が作った説明（「…を 13:47 に直します」）まで「理由:」の顔で出ていた。
+   *    ★文字で見分けるのをやめ、倉庫で分けて持つ（note＝人／reason＝機械）★。
+   *    ★古い行は note が空★＝何も出ない（昔の文も出ない）。 */
+  function showReason(f) {
+    return String((f && f.note) || '');
+  }
+
+  /** ★1行で言う★＝「08:00 出勤 を 数えません」（時間が動いた時だけ 分を足す）
+   *  ＝跡（tc_fix）に残っている文から ★時刻と種類だけ★を取り出す。
+   *    ★昔の書き方（「…は 間違いなので使いません」）でも 同じ1行になる★ように、
+   *    時刻と種類を拾って ★こちらで言い直す★。拾えない時だけ 残っている文をそのまま出す。 */
+  function fixLine(f) {
+    var r = String(f.reason || '');
+    var hm = /(\d{1,2}:\d{2})/.exec(r);
+    var kind = /(出勤|退勤|私用で外出|外出から戻る|休憩から戻る|休憩に入る)/.exec(r);
+    var moved = (f.before_min != null && f.after_min != null && f.before_min !== f.after_min)
+      ? '（' + f.before_min + '分 → ' + f.after_min + '分）' : '';
+    if (hm && kind) return hm[1] + ' ' + kind[1] + ' を 数えません' + moved;
+    return (r || '直しました') + moved;
+  }
+
+  function saveDayKind(day, kind) {
+    var p = personOf(st.who);
+    if (!p) { U.toast('先に人を選んでください'); return; }
+    var c = st.close || closeState();
+    if (c.state === 'closed') { U.toast(c.why.requestFix); return; }
+    DB.saveDayKind(st.user.id, p.employee_id, day, kind, st.user.id)
+      .then(function () {
+        U.toast(kind === 'paid_leave' ? day + ' を有給にしました' : day + ' の有給をやめました');
+        return drawShukei();
+      })
+      .catch(failed('できませんでした'));
+  }
+
   function renderTables(p) {
     var s = st.sum;
     q('daily').innerHTML = dailyInner(s);
+    /* ★狭い画面はカレンダー・広い画面は17列の表★（★同じ数字から作る★・CSSで出し分ける） */
+    var cal = q('cal');
+    if (cal) {
+      cal.innerHTML = calInner(s);
+      q('cal-day').hidden = true;
+      q('cal-day').classList.remove('open');
+      Array.prototype.forEach.call(cal.querySelectorAll('[data-day]'), function (b) {
+        b.onclick = function () { drawDayBox(Number(b.getAttribute('data-day'))); };
+      });
+    }
+    /* ★広い画面の表も 同じ箱を開く★（押す所が2つ・出る物は1つ） */
+    Array.prototype.forEach.call(d.querySelectorAll('#daily tbody tr[data-day]'), function (tr) {
+      tr.onclick = function () { drawDayBox(Number(tr.getAttribute('data-day'))); };
+    });
 
     /* ★割増の内訳を全部 出す★（社長が「なぜこれが残業でないのか」を説明できるように）
        ★総労働 ＝ 所定内 ＋ 所定超 ＋ 時間外 ＋ 休日★（深夜は上乗せなので足さない）
        率は ★LAW の数から作る★（説明文に直書きしない） */
     st.totalRows = totalRowsOf(p, s);
     q('total').innerHTML = st.totalRows.map(function (r) { return tr(r[0], r[1]); }).join('');
+    drawUndecided(s);
     drawCutBox(s);
     U.nameHint(q('namehint'), fileName(p, 'csv'));
   }
@@ -1100,6 +1627,21 @@
       ['有給残', String(yukyuLeft(p, s))],
       ['欠勤', String(m2.kekkin)],
     ];
+  }
+
+  /* ★決められない日は 給与へ渡す前に言う★（2026-08-18 指示役）
+     ＝★合計が小さいのに 理由が分からない★を作らない。日にちまで出して カレンダーへ誘導する。
+     ★中身が無い時は 箱ごと出さない★（空の赤い枠を見せない）。 */
+  function drawUndecided(s) {
+    var box = q('undecided');
+    if (!box) return;
+    var bad = (s.days || []).filter(function (d) { return d.undecided; });
+    if (!bad.length) { box.hidden = true; box.textContent = ''; return; }
+    box.hidden = false;
+    box.textContent = '決められない日が ' + bad.length + '日あります（'
+      + bad.map(function (d) { return (+d.d.slice(5, 7)) + '/' + (+d.d.slice(8, 10)); }).join('・')
+      + '）。同じ時刻に出勤と退勤が並んでいます。本人が自分の記録の画面で答えると、'
+      + 'その場で直ります。この日は まだ数えていません。';
   }
 
   /* ★切り捨てた時間と金額は必ず出す（黙って消さない）★ */
@@ -1164,14 +1706,15 @@
 
   /* 印刷 … ★紙だけの新しい窓で刷る／中身が0枚なら開かない★
      ★紙に「どう絞り込んだか」は刷らない★（対象の人と期間だけ書く） */
-  function doPrint() {
+  function doPrint(preview) {
     var p = personOf(st.who);
     if (!p || !st.sum) { U.toast('先に対象を選んでください'); return; }
     var s = st.sum;
     /* ★紙にも状態を刷る★（確定前の紙が「確定」の顔で回ると、後で数字が動いた時に食い違う）
        ★これは「どう絞り込んだか」ではなく「この数字が動くかどうか」なので刷ってよい★ */
     var body = paperOf(p, s, q('daily').outerHTML, st.totalRows);
-    U.printPaper(fileName(p, 'pdf').replace(/\.pdf$/, ''), body);
+    /* ★見せる物と刷る物は 同じ body★（作り方を分けない＝ズレようがない） */
+    U.printPaper(fileName(p, 'pdf').replace(/\.pdf$/, ''), body, { preview: preview === true });
   }
 
   /** ★全員ぶんを1回で刷る★（月末に10人ぶん10回 押さなくてよい）
@@ -1263,6 +1806,6 @@
   global.OwnerApp = {
     startLogin: startLogin, startIndex: startIndex, startShukei: startShukei,
     _st: st, _grantDaysOf: grantDaysOf, _fileName: fileName, _pinHistoryOf: pinHistoryOf,
-    _holNote: drawHolidayNote,
+    _holNote: drawHolidayNote, _hirePreview: hirePreview,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

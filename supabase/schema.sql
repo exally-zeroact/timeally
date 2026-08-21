@@ -202,6 +202,12 @@ create table if not exists timeally.tc_punch (
 );
 create index if not exists idx_tc_punch_emp_at on timeally.tc_punch(account_id, employee_id, at);
 
+-- ★「この時刻で合っている」と本人が答えた印★（2026-08-18 司さん「時刻を間違えた時」）
+--   機械が「長すぎ/短すぎ/退勤が先」に気づいて聞いた時、★合っていると答えたら 二度と聞かない★。
+--   ★中身は「聞いた事の種類」★（too-long / too-short / out-before-in）。
+--   ★打刻そのものは1文字も動かない★（at も kind も そのまま）。
+alter table timeally.tc_punch add column if not exists ok_types text[] not null default '{}';
+
 -- ─────────────────────────────────────────────────────────────────────────
 -- ④ tc_fix … 直しの申請と承認
 --    ★社長1人の会社は「自己承認」と残す★（承認が無かった事にしない）
@@ -222,6 +228,13 @@ create table if not exists timeally.tc_fix (
   punch_ids    uuid[] not null default '{}'        -- この申請で入れた打刻（承認で有効になる）
 );
 create index if not exists idx_tc_fix_pending on timeally.tc_fix(account_id, status, d);
+
+-- ★「この1本は使わない」というお願い（2026-08-18）★
+--   連打・打ち間違いの答え（「08:00 は出勤でした」＝退勤の1本を使わない）を持つ場所。
+--   ★消さない・書き換えない★ので、承認したら tc_punch.voided_at に印を付けるだけ
+--   （at も kind も1分も動かさない＝原本は残る）。
+--   ★列を足したら 窓(view)も作り直す★（この設計図の下の create or replace view が やる）。
+alter table timeally.tc_fix add column if not exists void_ids uuid[] not null default '{}';
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- ⑤ tc_shift … ★予定（シフト管理表）。最初から作る。中身は空でよい★
@@ -253,6 +266,20 @@ create table if not exists timeally.tc_shift (
 alter table timeally.tc_shift add column if not exists break_min int;
 alter table timeally.tc_shift add column if not exists break_by  uuid;
 alter table timeally.tc_shift add column if not exists break_at  timestamptz;
+-- ★有給を「付ける／外す」（2026-08-19）★
+--   ★新しい棚は作らない★＝有給は もともと day_kind='paid_leave' が持っている。
+--   足すのは ★誰が・いつ 付けたか★ の2つだけ（★休憩の break_by / break_at と同じ形★）。
+--   ★付与日数・繰越・残り日数の列は作らない★＝付けた日を数えれば出る（lib/tc-law.js が数える）。
+-- ★人が書いた言葉は 別の欄に持つ（2026-08-21 指示役）★
+--   前は reason 1つに ★自動で作った文（「…を 13:47 に直します」）★と
+--   ★人が書いた言葉（「打ち忘れ」）★が 混ざっていた。
+--   ⇒ 画面が「理由:」として刷ると ★理由でない文が 理由の顔で出る★。
+--   ★文字で見分けるのをやめる★＝ reason=機械が作った説明／note=人が書いた言葉。
+alter table timeally.tc_fix add column if not exists note text not null default '';
+
+alter table timeally.tc_shift add column if not exists day_kind_by uuid;
+alter table timeally.tc_shift add column if not exists day_kind_at timestamptz;
+
 alter table timeally.tc_shift drop constraint if exists tc_shift_break_min_range;
 alter table timeally.tc_shift add  constraint tc_shift_break_min_range
   check (break_min is null or (break_min >= 0 and break_min <= 1440));
@@ -518,6 +545,123 @@ begin
   return jsonb_build_object('ok',true,'id',v_id,'pending', v_src='calendar');
 end $$;
 
+-- ★打った直後だけ 自分で取り消せる★（2026-08-18 司さん「ミスのないような対処をさせろ」）
+--   ★これは「消す道」ではない★:
+--     ・行は残る（at も kind も1分も動かさない）。★voided_at の印を立てるだけ★
+--     ・読む側（tc_my_punches / loadPunches）が voided_at is null で外すので、
+--       ★会社には何も出ない＝お願いにもならない＝会社の手間も増えない★
+--   ★門は倉庫の側にも作る★（画面だけで止めると 直に叩けば通る）:
+--     ① 自分の打刻だけ ② その場の打刻(src='punch')だけ ③ ★60秒以内★ ④ まだ取り消していない
+--     ⑤ 締め切った月は受け付けない
+--   ★60秒の根拠★: 実データ（tc_punch の created_at）で ★押し直しの間隔は最大11.9秒★。その5倍。
+create or replace function public.tc_punch_undo(p_token uuid, p_device text, p_pw text, p_id uuid)
+returns jsonb language plpgsql security definer set search_path=public, extensions, timeally as $$
+declare v_pub timeally.tc_pub; v_row timeally.tc_punch; v_st text;
+begin
+  select * into v_pub from timeally.tc_pub where token=p_token;
+  if v_pub.token is null or not v_pub.active then return jsonb_build_object('ok',false,'unauth',true); end if;
+  if not timeally.tc_ok(v_pub, p_device, p_pw) then return jsonb_build_object('ok',false,'unauth',true); end if;
+  select * into v_row from timeally.tc_punch
+   where id = p_id and account_id = v_pub.account_id and employee_id = v_pub.employee_id;
+  if v_row.id is null then return jsonb_build_object('ok',false,'not_mine',true); end if;
+  if v_row.voided_at is not null then return jsonb_build_object('ok',false,'already',true); end if;
+  if v_row.src <> 'punch' then return jsonb_build_object('ok',false,'not_punch',true); end if;
+  if now() - v_row.created_at > interval '60 seconds' then
+    return jsonb_build_object('ok',false,'too_late',true); end if;
+  v_st := timeally.tc_state(v_pub.account_id, ((v_row.at at time zone 'Asia/Tokyo')::date));
+  if v_st <> 'open' then return jsonb_build_object('ok',false,'closed',true,'state',v_st); end if;
+  update timeally.tc_punch set voided_at = now() where id = p_id;
+  return jsonb_build_object('ok',true);
+end $$;
+
+-- ★自分で直す（お願い 不要）★（2026-08-18 夜 司さん「願いを出さな修正できんのはどうかと思う」）
+--   ★線は3つ★ … ①その場60秒は取り消し（tc_punch_undo）／★②これ＝自分で直す★／③会社に出す(tc_fix)
+--   ②の条件（★倉庫の側でも全部 見る★・画面だけで止めない）:
+--     ・自分の打刻だけ ・まだ取り消していない ・★締めた月は駄目★（給与が確定した後に動かさない）
+--   ★元の値は消さない★:
+--     ・直す   … ★元の行に voided_at の印★＋★新しい時刻の行を1本 足す★（at も kind も作り替えない）
+--     ・取り消す… ★元の行に voided_at の印だけ★
+--   ★後から必ず見える★:
+--     ・tc_fix に ★status='approved' / requested_by='employee' / approved_by='employee'★ で1行 残す
+--       ＝会社の画面（直しの箱）に ★「自分で直した」★として出る。誰が・いつ・何を、が消えない。
+create or replace function public.tc_punch_edit(p_token uuid, p_device text, p_pw text,
+                                                p_id uuid, p_at timestamptz, p_kind text, p_reason text,
+                                                p_note text default '')
+returns jsonb language plpgsql security definer set search_path=public, extensions, timeally as $$
+declare v_pub timeally.tc_pub; v_row timeally.tc_punch; v_st text; v_new uuid; v_d date; v_kind text;
+begin
+  select * into v_pub from timeally.tc_pub where token=p_token;
+  if v_pub.token is null or not v_pub.active then return jsonb_build_object('ok',false,'unauth',true); end if;
+  if not timeally.tc_ok(v_pub, p_device, p_pw) then return jsonb_build_object('ok',false,'unauth',true); end if;
+  -- ★足す（p_id が無い）★ … 打ち忘れた分も ★その場で入る★（2026-08-18 夜3 司さん）
+  --   ＝人が覚える言葉は「直す・消す・足す」の3つだけ。お願い・承認は もう出さない。
+  if p_id is null then
+    if p_at is null or p_kind not in ('in','out','break_in','break_out','away_in','away_out') then
+      return jsonb_build_object('ok',false,'bad_kind',true); end if;
+    v_d := ((p_at at time zone 'Asia/Tokyo')::date);
+  else
+    select * into v_row from timeally.tc_punch
+     where id = p_id and account_id = v_pub.account_id and employee_id = v_pub.employee_id;
+    if v_row.id is null then return jsonb_build_object('ok',false,'not_mine',true); end if;
+    if v_row.voided_at is not null then return jsonb_build_object('ok',false,'already',true); end if;
+    v_d := ((v_row.at at time zone 'Asia/Tokyo')::date);
+  end if;
+  v_st := timeally.tc_state(v_pub.account_id, v_d);
+  -- ★締めた月は 自分では直せない★（会社に出す道＝tc_fix_request へ回す）
+  if v_st = 'closed' then return jsonb_build_object('ok',false,'closed',true,'state',v_st); end if;
+  -- ★これから先の時刻は入れない★（原本を汚さない・打刻を入れる時と同じ線）
+  if p_at is not null and p_at > now() + interval '5 minutes' then
+    return jsonb_build_object('ok',false,'future',true); end if;
+  -- ★直す／足す時は 新しい行を1本 足す（その場で記録に入る＝approved_at を入れる）★
+  if p_at is not null then
+    if p_id is not null and ((p_at at time zone 'Asia/Tokyo')::date) <> v_d then
+      return jsonb_build_object('ok',false,'other_day',true); end if;
+    v_kind := case when p_id is null then p_kind else v_row.kind end;
+    insert into timeally.tc_punch(account_id, employee_id, at, kind, src, device, approved_at)
+    values (v_pub.account_id, v_pub.employee_id, p_at, v_kind,
+            case when p_id is null then 'calendar' else 'punch' end,
+            left(coalesce(p_device,''),64), now())
+    returning id into v_new;
+  end if;
+  -- ★元の行は消さない。印を立てるだけ★（足す時は 消す元が無い）
+  if p_id is not null then
+    update timeally.tc_punch set voided_at = now() where id = p_id;
+  end if;
+  -- ★跡を残す（会社の画面に出る）★
+  insert into timeally.tc_fix(account_id, employee_id, d, before_min, after_min, reason, note,
+                              requested_by, approved_by, approved_at, status, punch_ids, void_ids)
+  values (v_pub.account_id, v_pub.employee_id, v_d, null, null, coalesce(p_reason,''), coalesce(p_note,''),
+          'employee', 'employee', now(), 'approved',
+          case when v_new is null then '{}'::uuid[] else array[v_new] end,
+          case when p_id is null then '{}'::uuid[] else array[p_id] end);
+  return jsonb_build_object('ok',true,'id',v_new);
+end $$;
+
+-- ★「この時刻で合っている」と答える★（2026-08-18）
+--   機械が気づいて聞いた事に本人が答える。★答えたら 二度と聞かない★（印を1つ足すだけ）。
+--   ★打刻は1文字も動かない★（at も kind も そのまま。消しもしない）。
+--   ★同じ物を2回 足さない★（array に無い時だけ足す）。
+create or replace function public.tc_punch_ok(p_token uuid, p_device text, p_pw text,
+                                              p_id uuid, p_type text)
+returns jsonb language plpgsql security definer set search_path=public, extensions, timeally as $$
+declare v_pub timeally.tc_pub; v_row timeally.tc_punch; v_st text;
+begin
+  select * into v_pub from timeally.tc_pub where token=p_token;
+  if v_pub.token is null or not v_pub.active then return jsonb_build_object('ok',false,'unauth',true); end if;
+  if not timeally.tc_ok(v_pub, p_device, p_pw) then return jsonb_build_object('ok',false,'unauth',true); end if;
+  if p_type is null or p_type not in ('too-long','too-short','out-before-in') then
+    return jsonb_build_object('ok',false,'bad_type',true); end if;
+  select * into v_row from timeally.tc_punch
+   where id = p_id and account_id = v_pub.account_id and employee_id = v_pub.employee_id;
+  if v_row.id is null then return jsonb_build_object('ok',false,'not_mine',true); end if;
+  v_st := timeally.tc_state(v_pub.account_id, ((v_row.at at time zone 'Asia/Tokyo')::date));
+  if v_st = 'closed' then return jsonb_build_object('ok',false,'closed',true,'state',v_st); end if;
+  update timeally.tc_punch
+     set ok_types = (select array_agg(distinct x) from unnest(ok_types || array[p_type]) as x)
+   where id = p_id;
+  return jsonb_build_object('ok',true);
+end $$;
+
 -- ★自分の記録を返す。返すのは「打った生の時刻」だけ★
 --   実労働・残業・丸め・金額は ★1つも返さない★（従業員は嘘の数字を一度も見ない）
 create or replace function public.tc_my_punches(p_token uuid, p_device text, p_pw text,
@@ -530,7 +674,9 @@ begin
   if not timeally.tc_ok(v_pub, p_device, p_pw) then return jsonb_build_object('unauth',true); end if;
   select coalesce(jsonb_agg(jsonb_build_object(
            'id', id, 'at', at, 'kind', kind, 'src', src,
-           'pending', (approved_at is null)) order by at), '[]')
+           'pending', (approved_at is null),
+           -- ★「合っている」と答えた印★（時刻の確かめを二度と聞かない為。数えた結果ではない）
+           'ok_types', ok_types) order by at), '[]')
     into v_rows
     from timeally.tc_punch
    where account_id = v_pub.account_id and employee_id = v_pub.employee_id
@@ -540,11 +686,16 @@ begin
 end $$;
 
 -- ★直しの申請★（従業員が出す。承認は社長側）
+--   p_void_ids … ★「この1本は使わない」というお願い★（2026-08-18）
+--     連打・打ち間違いの答え。★原本は消さない・書き換えない★ので、
+--     ここでは ★自分の打刻かどうかだけ確かめて 申請に載せる★。
+--     実際に印(voided_at)を付けるのは ★社長が承認した時★（js/tc-db.js の approveFix）。
 create or replace function public.tc_fix_request(p_token uuid, p_device text, p_pw text,
                                                  p_d date, p_before int, p_after int,
-                                                 p_reason text, p_punch_ids uuid[])
+                                                 p_reason text, p_punch_ids uuid[],
+                                                 p_void_ids uuid[] default '{}')
 returns jsonb language plpgsql security definer set search_path=public, extensions, timeally as $$
-declare v_pub timeally.tc_pub; v_id uuid; v_st text;
+declare v_pub timeally.tc_pub; v_id uuid; v_st text; v_mine int;
 begin
   select * into v_pub from timeally.tc_pub where token=p_token;
   if v_pub.token is null or not v_pub.active then return jsonb_build_object('ok',false,'unauth',true); end if;
@@ -553,9 +704,16 @@ begin
   --   ★締め待ち(pending)は 受け取る★＝締め日の後こそ直しが出る
   v_st := timeally.tc_state(v_pub.account_id, p_d);
   if v_st = 'closed' then return jsonb_build_object('ok',false,'closed',true,'state',v_st); end if;
-  insert into timeally.tc_fix(account_id, employee_id, d, before_min, after_min, reason, requested_by, punch_ids)
+  -- ★他人の打刻を「使わない」に出来ないようにする★（自分の物だけ）
+  if coalesce(array_length(p_void_ids,1),0) > 0 then
+    select count(*) into v_mine from timeally.tc_punch
+     where id = any(p_void_ids) and account_id = v_pub.account_id and employee_id = v_pub.employee_id;
+    if v_mine <> array_length(p_void_ids,1) then return jsonb_build_object('ok',false,'not_mine',true); end if;
+  end if;
+  insert into timeally.tc_fix(account_id, employee_id, d, before_min, after_min, reason, requested_by,
+                              punch_ids, void_ids)
   values (v_pub.account_id, v_pub.employee_id, p_d, p_before, p_after, coalesce(p_reason,''), 'employee',
-          coalesce(p_punch_ids,'{}'))
+          coalesce(p_punch_ids,'{}'), coalesce(p_void_ids,'{}'))
   returning id into v_id;
   return jsonb_build_object('ok',true,'id',v_id);
 end $$;
@@ -578,8 +736,16 @@ begin
   --   ★notice は そのまま画面に出す文★＝従業員に見せる文を作るのは ここ1か所。
   --   ★割増・丸め・切り捨て・金額の言葉は 1文字も入れない★
   --   （lib/tc-close.js の employeeNotice と ★同じ文★。tests/tc-close が突き合わせている）
+  -- ★day_std_min は「会社の1日の所定（分）」★＝★長すぎの線を 画面と数える所で同じにする★ため。
+  --   ★丸め方・率・金額は 今までどおり1つも返さない★（これは設定であって 数えた結果ではない）。
+  -- ★有給は「入社日」と「有給にした日の一覧」だけ返す★（2026-08-19）
+  --   ＝★残り日数は 画面(lib/tc-law.js)が数える★。同じ判定を倉庫と画面の2か所に置かない。
   return jsonb_build_object('found',true,'company', coalesce(v_co.name,''), 'name', v_pub.name,
-    'state', v_st, 'ym', v_ym,
+    'state', v_st, 'ym', v_ym, 'day_std_min', coalesce(v_co.daily_std_min, 480),
+    'hire_date', v_pub.hire_date,
+    'yukyu_days', coalesce((select jsonb_agg(sh.d order by sh.d) from timeally.tc_shift sh
+       where sh.account_id = v_pub.account_id and sh.employee_id = v_pub.employee_id
+         and sh.day_kind = 'paid_leave'), '[]'::jsonb),
     'notice', case when v_st = 'closed'
       then ltrim(right(v_ym, 2), '0') || '月は締め切りました。直しは会社へ言ってください'
       else '' end);
@@ -604,13 +770,24 @@ grant execute on function
   public.tc_pin_set(uuid,text),
   public.tc_verify(uuid,text),
   public.tc_punch_add(uuid,text,text,timestamptz,text,text),
+  public.tc_punch_undo(uuid,text,text,uuid),
+  public.tc_punch_ok(uuid,text,text,uuid,text),
+  public.tc_punch_edit(uuid,text,text,uuid,timestamptz,text,text,text),
   public.tc_my_punches(uuid,text,text,date,date),
-  public.tc_fix_request(uuid,text,text,date,int,int,text,uuid[]),
+  public.tc_fix_request(uuid,text,text,date,int,int,text,uuid[],uuid[]),
   public.tc_pub_info(uuid,date)
 to anon, authenticated;
 
 -- ★引数を増やした前の形は 落とす★（残ると 古い形が呼べてしまい、締めの門が無い方が通る）
 drop function if exists public.tc_pub_info(uuid);
+-- ★2026-08-18 tc_fix_request に p_void_ids を足した★＝★前の8引数の形は落とす★
+--   （残ると 古い形が呼べてしまい ★「使わない」を確かめない道★が生き続ける）
+drop function if exists public.tc_fix_request(uuid,text,text,date,int,int,text,uuid[]);
+-- ★2026-08-18 夜3 tc_punch_edit に p_kind を足した（足す道を1本にまとめた）★＝前の形は落とす
+drop function if exists public.tc_punch_edit(uuid,text,text,uuid,timestamptz,text);
+-- ★2026-08-21 tc_punch_edit に p_note を足した（人が書いた言葉を 機械の説明と分けて持つ）★
+--   ＝前の7引数の形は落とす（残ると 古い形が呼べて ★note を持たない行が また増える★）
+drop function if exists public.tc_punch_edit(uuid,text,text,uuid,timestamptz,text,text);
 
 -- 初回コードの再発行（社長）はRLSで直接 update すればよい:
 --   update tc_pub set init_code='ABCD1234', pw_hash=null, device_tokens='{}', fail_count=0, locked_until=null

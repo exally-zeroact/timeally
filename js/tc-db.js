@@ -134,7 +134,9 @@
       return q;
     }).then(function (rows) {
       return rows.map(function (r) {
-        return { id: r.id, at: toJst(r.at), kind: r.kind, src: r.src, pending: !r.approved_at };
+        return { id: r.id, at: toJst(r.at), kind: r.kind, src: r.src, pending: !r.approved_at,
+          /* ★「合っている」と本人が答えた印★（社長の画面でも 同じ物を見る＝二度と聞かない） */
+          ok_types: r.ok_types || [] };
       });
     });
   }
@@ -164,10 +166,22 @@
     }).eq('id', id).select().then(function (r) {
       if (r.error) throw new Error(r.error.message);
       var row = (r.data || [])[0];
-      if (!row || !row.punch_ids || !row.punch_ids.length) return row;
+      if (!row) return row;
+      var jobs = [];
       /* 申請で入れた打刻を「確定」にする（原本の時刻は1分も動かさない） */
-      return client().from('tc_punch').update({ approved_at: new Date().toISOString() })
-        .in('id', row.punch_ids).then(function () { return row; });
+      if (row.punch_ids && row.punch_ids.length) {
+        jobs.push(client().from('tc_punch').update({ approved_at: new Date().toISOString() })
+          .in('id', row.punch_ids));
+      }
+      /* ★「この1本は使わない」に印を付ける★（2026-08-18）
+         ★消さない・時刻も種類も1分も動かさない★＝voided_at を立てるだけ。
+         読む側（loadPunches / tc_my_punches）が voided_at is null で外す。 */
+      if (row.void_ids && row.void_ids.length) {
+        jobs.push(client().from('tc_punch').update({ voided_at: new Date().toISOString() })
+          .in('id', row.void_ids));
+      }
+      if (!jobs.length) return row;
+      return Promise.all(jobs).then(function () { return row; });
     });
   }
   function rejectFix(id, byUid) {
@@ -196,6 +210,17 @@
       });
     });
   }
+  /** ★全員ぶんを1回で読む★（2026-08-19 年5日のため）
+      ＝人ごとに聞くと 18人で18回になる。★中身は loadShifts と同じ形★（employeeId が付くだけ）。 */
+  function loadShiftsAll(fromDate, toDate) {
+    return selectAll('tc_shift', function (q) {
+      return q.gte('d', fromDate).lte('d', toDate).order('d');
+    }).then(function (rows) {
+      return rows.map(function (r) {
+        return { employeeId: r.employee_id, d: r.d, dayKind: r.day_kind };
+      });
+    });
+  }
   function saveShift(row) {
     return client().from('tc_shift').upsert(row, { onConflict: 'account_id,employee_id,d' }).select()
       .then(function (r) { if (r.error) throw wrapError('tc_shift', r.error); return (r.data || [])[0]; });
@@ -210,13 +235,26 @@
     });
   }
 
+  /** ★その日を 有給にする／やめる★（2026-08-19・社長が押す）
+      ＝★休憩の直しと同じ形★（誰が・いつ を一緒に残す）。
+        ★消さない★＝日ごとの棚は上書きだが、'work' に戻した跡も 誰が・いつ で残る。 */
+  function saveDayKind(accountId, employeeId, d, dayKind, byUid) {
+    return saveShift({
+      account_id: accountId, employee_id: employeeId, d: d,
+      day_kind: dayKind, day_kind_by: byUid, day_kind_at: new Date().toISOString(),
+    });
+  }
+
   /* ── 締めの記録（★追記だけ★） ──────────────────────────────
      ★update も delete も書かない★（倉庫の側でも渡していない）。
      ここに「消す」を1本でも足したら、直しの跡が消える。 */
   function listCloseLog(ym) {
     return selectAll('tc_close', function (q) {
       if (ym) q = q.eq('ym', ym);
-      return q.order('at');
+      /* ★締めの記録に 入口（暗証番号）の記録を混ぜない★（2026-08-21 指示役が実配信で見つけた）
+         ＝混ざると 画面に「pin_set」という ★中の言葉★ が出る。
+           入口の記録は 従業員の画面（人ごと）に もう出している。 */
+      return q.in('action', ['close', 'reopen', 'export']).order('at');
     });
   }
   /** ★入口の記録だけ（人ごと）★ … 締めの履歴と混ぜない */
@@ -252,21 +290,38 @@
         p_at: fromJst(wallTime), p_kind: kind, p_src: src || 'punch',
       });
     },
+    /** ★打った直後だけ 自分で取り消す★（★消さない＝倉庫が voided_at の印を立てるだけ★）
+        ★門は倉庫の側★（自分の物・その場の打刻・60秒以内・締めていない）。 */
+    undo: function (token, device, pw, id) {
+      return rpc('tc_punch_undo', { p_token: token, p_device: device, p_pw: pw, p_id: id });
+    },
+    /** ★直す・消す・足す は この1本★（2026-08-18 夜3 司さん「シンプルイズベスト」）
+        ・直す … id と 新しい時刻 → ★新しい行を足して 元に印★
+        ・消す … id だけ            → ★元に印だけ★
+        ・足す … id を渡さず 時刻と種類 → ★新しい行を1本★
+        ★どれも その場で記録に入る★／★締めた月は倉庫が断る（closed）★ */
+    /** why＝機械が作った説明（何をしたか）／note＝人が書いた言葉（理由）。★混ぜない★ */
+    edit: function (token, device, pw, id, wallTime, kind, why, note) {
+      return rpc('tc_punch_edit', {
+        p_token: token, p_device: device, p_pw: pw, p_id: id || null,
+        p_at: wallTime ? fromJst(wallTime) : null, p_kind: kind || null,
+        p_reason: why || '', p_note: note || '',
+      });
+    },
+    /** ★「この時刻で合っている」と答える★（印を1つ足すだけ＝打刻は1文字も動かない） */
+    okTime: function (token, device, pw, id, type) {
+      return rpc('tc_punch_ok', { p_token: token, p_device: device, p_pw: pw, p_id: id, p_type: type });
+    },
     mine: function (token, device, pw, from, to) {
       return rpc('tc_my_punches', { p_token: token, p_device: device, p_pw: pw, p_from: from, p_to: to })
         .then(function (r) {
           if (!r || r.unauth) return r;
           r.punches = (r.punches || []).map(function (p) {
-            return { id: p.id, at: toJst(p.at), kind: p.kind, src: p.src, pending: p.pending };
+            return { id: p.id, at: toJst(p.at), kind: p.kind, src: p.src, pending: p.pending,
+              ok_types: p.ok_types || [] };
           });
           return r;
         });
-    },
-    fixRequest: function (token, device, pw, d, beforeMin, afterMin, reason, punchIds) {
-      return rpc('tc_fix_request', {
-        p_token: token, p_device: device, p_pw: pw, p_d: d,
-        p_before: beforeMin, p_after: afterMin, p_reason: reason, p_punch_ids: punchIds || [],
-      });
     },
   };
 
@@ -279,7 +334,7 @@
     listPeople: listPeople, addPerson: addPerson, updatePerson: updatePerson,
     loadPunches: loadPunches, addPunch: addPunch,
     listFixes: listFixes, approveFix: approveFix, rejectFix: rejectFix,
-    loadShifts: loadShifts, saveShift: saveShift, saveDayBreak: saveDayBreak,
+    loadShifts: loadShifts, loadShiftsAll: loadShiftsAll, saveShift: saveShift, saveDayBreak: saveDayBreak, saveDayKind: saveDayKind,
     listCloseLog: listCloseLog, addCloseLog: addCloseLog, listPinLog: listPinLog,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

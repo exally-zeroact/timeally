@@ -10,6 +10,16 @@
  */
 'use strict';
 
+/** JSTの壁時計 ['YYYY-MM-DDTHH:mm', kind] → 倉庫の1行（UTCで持つ） */
+function punchRow(id, r) {
+  var wall = r[0], kind = r[1];
+  var t = Date.UTC(+wall.slice(0, 4), +wall.slice(5, 7) - 1, +wall.slice(8, 10),
+    +wall.slice(11, 13), +wall.slice(14, 16)) - 9 * 3600000;
+  var at = new Date(t).toISOString();
+  return { id: id, account_id: 'u1', employee_id: 'E1', at: at, kind: kind, src: r[2] || 'punch',
+    device: null, approved_at: r[2] === 'calendar' ? null : at, voided_at: null, created_at: at };
+}
+
 function rowsFor(table, seed, store) {
   var s = seed || {};
   /* ★締めの記録は「入れた物が読める」ようにする★
@@ -17,6 +27,13 @@ function rowsFor(table, seed, store) {
   /* ★seed.closedYm でその月を「確定」にできる★（頭の【 】の文字数が変わるので 紙の幅に効く） */
   if (table === 'tc_close') {
     var base = (store && store.tc_close) || [];
+    /* ★seed.pinInLog=true … 入口の記録（pin_set）が 同じ棚に混ざっている★（実配信の姿）
+       ＝この種が無いと「中の言葉を出さない」を確かめた事にならない。
+         ★偽の倉庫は 絞り込みをしない★ので、画面側の見張り（言葉を持たない物は描かない）を試せる。 */
+    if (s.pinInLog) {
+      base = base.concat([{ id: 'pin1', account_id: 'u1', ym: s.ym || '2026-08', action: 'pin_set',
+        at: '2026-08-21T03:15:00Z', by_uid: null, by_name: '田中 花子', employee_id: 'E1', reason: '' }]);
+    }
     if (s.closedYm && !base.some(function (r) { return r.action === 'close'; })) {
       return base.concat([{ id: 'seed1', account_id: 'u1', ym: s.closedYm, action: 'close',
         at: '2026-08-01T00:00:00Z', by_uid: 'u1', by_name: 'a@example.com', employee_id: null, reason: '' }]);
@@ -49,8 +66,14 @@ function rowsFor(table, seed, store) {
           token: '1111111' + k + '-1111-1111-1111-111111111111', account_id: 'u1',
           employee_id: 'E' + (k + 1),
           name: s.longName ? '長谷川 佐和子' + (k + 1) : (['山田 太郎', '佐藤 花子', '鈴木 一郎'][k] || ('従業員' + k)),
-          emp_no: 'A0' + (k + 1), hire_date: '2024-04-01', hourly_yen: 1200,
-          init_code: null, pw_hash: null, device_tokens: [],
+          emp_no: 'A0' + (k + 1), hourly_yen: 1200,
+          /* ★seed.hireMix=true … 入社日が入っている人と 空の人が混ざる★（2026-08-19 追加）
+             ＝実データは ★18人中14人が空★。全員入っていると
+             「入社日を聞く箱」も「年5日」も ★何も絞らずに緑★になる。 */
+          hire_date: s.hireMix ? (k % 2 === 0 ? null : '2019-04-01') : '2024-04-01',
+          /* ★seed.pinMix=true … 決めた人と まだの人が混ざる★（2026-08-16 追加）
+             ＝全員おなじだと ★「まだの人だけ出す」が 何も絞っていなくても緑になる★。 */
+          init_code: null, pw_hash: (s.pinMix && k % 3 !== 0) ? '$2a$10$dummydummydummydummydu' : null, device_tokens: [],
           fail_count: 0, locked_until: null, active: true, created_at: '2026-08-01T00:00:00Z',
         });
       }
@@ -59,7 +82,7 @@ function rowsFor(table, seed, store) {
     return [{
       token: '11111111-1111-1111-1111-111111111111', account_id: 'u1',
       employee_id: 'E1', emp_no: 'A01',
-      hire_date: '2024-04-01', hourly_yen: 1200,
+      hire_date: s.hireDate === undefined ? '2024-04-01' : s.hireDate, hourly_yen: 1200,
       /* ★長い氏名でも頭がはみ出さないか★を測れるようにする */
       name: s.longName ? '長谷川 佐和子' : '山田 太郎',
       /* ★seed.pwSet=true … 暗証番号は決めてあるが 帳面には記録が無い人★
@@ -69,6 +92,14 @@ function rowsFor(table, seed, store) {
     }];
   }
   if (table === 'tc_punch') {
+    /* ★seed.punches … 実物の打刻をそのまま入れる★（2026-08-18 追加）
+       ＝★司さんが実機で作った 08/17 の5本★を そのまま試すため（作り物で代用しない）。
+       形は [['2026-08-17T08:00','in'], …]（JSTの壁時計）。 */
+    if (s.punches) return s.punches.map(function (r, i) { return punchRow('sp' + i, r); });
+    /* ★seed.noPunch=true … 打刻が1つも無い会社★（2026-08-16 追加）
+       ＝入れたばかりの会社は ★必ずこの姿から始まる★。作らないと
+       ★「黙って空の表が出る」を 見張りが素通りする★（指示役⑤）。 */
+    if (s.noPunch) return [];
     /* ★seed.days を渡すと 1か月ぶんの打刻を作る★（紙が1枚に収まるかを実物で数えるため）
        ★repeat で わざと増やせる★＝2枚になった時の見出しを確かめる用。 */
     if (s.days) {
@@ -125,11 +156,76 @@ function rowsFor(table, seed, store) {
     ];
   }
   if (table === 'tc_fix') {
+    /* ★seed.fixBoth=true … 「もう入った物」と「まだの物」を 同時に持たせる★（2026-08-18 夜）
+       ＝社長の画面で ★2つが同じ箱に混ざっていないか★ を実物で押して見るために要る。
+         （片方しか無い種では「混ざっていない」を確かめたことにならない） */
+    /* ★seed.fixDoneOnly=true … 古い分が 0件の会社★（＝この決まりの後に始めた会社の姿）
+       ＝②の箱が ★見出しごと消えるか★ を実物で見るために要る。 */
+    /* ★seed.fixReal=true … 司さんの実機に出た形★（2026-08-21 実データから写した）
+       ＝★同じ打刻の跡が2回★／★前も後も0分★／昔の書き方の理由。
+         これが無いと「重なりを消した」「0分→0分を出さない」を確かめた事にならない。 */
+    /* ★seed.fixOldReason=true … 倉庫に残っている「昔の書き方」が入った 承認前の1件★
+       ＝作る所を消しても ★保存済みの文は消えない★。この種が無いと
+         「昔の書き方を刷らない」を確かめた事にならない（司さんの実機に出た文そのもの）。 */
+    if (s.fixOldReason) {
+      return [{ id: 'o1', account_id: 'u1', employee_id: 'E1', d: '2026-08-03',
+        before_min: null, after_min: null,
+        reason: '8/17 の 08:00 出勤 は 間違いなので使いません', note: '',
+        requested_by: 'employee', requested_at: '2026-08-17T12:00:00Z',
+        approved_by: null, approved_at: null, status: 'pending',
+        punch_ids: [], void_ids: [] }];
+    }
+    if (s.fixReal) {
+      var mk = function (id, hm, kind) {
+        return { id: id, account_id: 'u1', employee_id: 'E1', d: '2026-08-17',
+          before_min: 0, after_min: 0,
+          reason: '8/17 の ' + hm + ' ' + kind + ' は 間違いなので使いません', note: '',
+          requested_by: 'employee', requested_at: '2026-08-17T12:00:00Z',
+          approved_by: 'u1', approved_at: '2026-08-17T12:00:00Z',
+          status: 'approved', punch_ids: [], void_ids: ['v-' + hm] };
+      };
+      return [mk('x1', '08:00', '出勤'), mk('x2', '17:03', '退勤'),
+        mk('x3', '21:44', '出勤'), mk('x4', '17:03', '退勤')];
+    }
+    if (s.fixDoneOnly) {
+      return [
+        { id: 'f2', account_id: 'u1', employee_id: 'E1', d: '2026-08-03',
+          before_min: 540, after_min: 480, reason: '9:00 出勤 を 10:00 に直しました', note: '押し間違い',
+          requested_by: 'employee',
+          requested_at: '2026-08-06T00:00:00Z', approved_by: 'employee', approved_at: '2026-08-06T00:00:00Z',
+          status: 'approved', punch_ids: ['p2'], void_ids: [] },
+      ];
+    }
+    if (s.fixBoth) {
+      return [
+        { id: 'f1', account_id: 'u1', employee_id: 'E1', d: '2026-08-04',
+          before_min: null, after_min: null, reason: '8/4 09:30 に 出勤 を足しました', note: '打ち忘れ',
+        requested_by: 'employee',
+          requested_at: '2026-08-05T00:00:00Z', approved_by: null, approved_at: null,
+          status: 'pending', punch_ids: ['p3'], void_ids: [] },
+        { id: 'f2', account_id: 'u1', employee_id: 'E1', d: '2026-08-03',
+          before_min: 540, after_min: 480, reason: '9:00 出勤 を 10:00 に直しました', note: '押し間違い',
+          requested_by: 'employee',
+          requested_at: '2026-08-06T00:00:00Z', approved_by: 'employee', approved_at: '2026-08-06T00:00:00Z',
+          status: 'approved', punch_ids: ['p2'], void_ids: [] },
+      ];
+    }
     return [{
-      id: 'f1', account_id: 'u1', employee_id: 'E1', d: '2026-08-04',
-      before_min: null, after_min: null, reason: '打ち忘れ', requested_by: 'employee',
+      /* ★fixVoid の時は 打刻が在る日にする★（別の日にすると どちらも0分で
+         「数に入れていない」のか「その日に打刻が無い」のか 見分けが付かない） */
+      id: 'f1', account_id: 'u1', employee_id: 'E1',
+      d: s.fixVoid ? '2026-08-03' : (s.fixSame ? (s.sameDay || '2026-08-03') : '2026-08-04'),
+      before_min: null, after_min: null, reason: '8/4 09:30 に 出勤 を足しました', note: '打ち忘れ',
+      requested_by: 'employee',
       requested_at: '2026-08-05T00:00:00Z', approved_by: null, approved_at: null,
       status: 'pending', punch_ids: ['p3'],
+      /* ★seed.fixVoid=true …「この1本は使わない」お願い★（2026-08-18 追加）
+         ＝連打・打ち間違いの答え。★これを数に入れないと 社長の画面が
+         「元は540分 → 承認すると540分」と出て ★何も変わらないように見える★。 */
+      /* ★fixSame=true … 数字が動かない直し★（まだ退勤が入っていない日の 時刻の直し）
+         ＝前も後も0分。★0→0 と出さずに 何が起きるかを言う★かを実物で押して見る。 */
+      void_ids: s.fixVoid ? ['p1'] : [],
+      punch_ids: s.fixSame ? [] : ['p3'],
     }];
   }
   if (table === 'tc_shift') {
@@ -138,7 +234,7 @@ function rowsFor(table, seed, store) {
     var ym2 = s.ym || '2026-08';
     var mk = function (n) { return ym2 + '-' + ('0' + n).slice(-2); };
     return [
-      { id: 's1', account_id: 'u1', employee_id: 'E1', d: mk(2), planned_min: null, planned_in: null, planned_out: null, day_kind: 'paid_leave', note: '', break_min: null, break_by: null, break_at: null },
+      { id: 's1', account_id: 'u1', employee_id: 'E1', d: mk(2), planned_min: null, planned_in: null, planned_out: null, day_kind: 'paid_leave', note: '', break_min: null, break_by: null, break_at: null, day_kind_by: 'u1', day_kind_at: '2026-08-19T00:00:00Z' },
       { id: 's2', account_id: 'u1', employee_id: 'E1', d: mk(10), planned_min: null, planned_in: null, planned_out: null, day_kind: 'absent', note: '', break_min: null, break_by: null, break_at: null },
       /* ★社長が休憩を直した日★（出どころが「直した値」になる） */
       { id: 's3', account_id: 'u1', employee_id: 'E1', d: mk(6), planned_min: null, planned_in: null, planned_out: null, day_kind: 'work', note: '', break_min: 0, break_by: 'u1', break_at: '2026-08-15T01:00:00Z' },
@@ -193,6 +289,8 @@ function createFake(seed) {
   var tick = 0;
   var store = {
     tc_close: (seed.closeLog || []).slice(),
+    /* ★従業員が出した「お願い」と「後から入れた打刻」と「打った直後の取り消し」★（2026-08-18） */
+    fixReq: [], punchAdd: [], undo: [], okTime: [], edit: [],
     clock: function () { tick++; return '2026-08-15T' + ('0' + (9 + tick)).slice(-2) + ':00:00Z'; },
   };
   return {
@@ -216,7 +314,13 @@ function createFake(seed) {
       }
       /* ★notice は倉庫が作る文★（画面が組み立てない）。seed.empClosed=true で締め切った後を作る */
       if (name === 'tc_pub_info') {
-        out = { found: true, company: 'テスト商事', name: '山田 太郎', state: 'open', ym: '2026-08', notice: '' };
+        out = { found: true, company: 'テスト商事', name: '山田 太郎', state: 'open', ym: '2026-08',
+          notice: '', day_std_min: 480,
+          /* ★有給の残りを出すための「元の事実」だけ★（2026-08-19）
+             ＝入社日と「有給にした日」。★残り日数は倉庫では数えない★（lib/tc-yukyu.js が数える）。
+             seed.hireDate に null を入れれば ★入社日が無い人（実データで18人中14人）★を試せる。 */
+          hire_date: seed.hireDate === undefined ? '2022-07-01' : seed.hireDate,
+          yukyu_days: seed.yukyuDays || [] };
         if (seed.empClosed) { out.state = 'closed'; out.notice = '7月は締め切りました。直しは会社へ言ってください'; out.ym = '2026-07'; }
       }
       if (name === 'tc_verify') out = { ok: true, device_token: 'dev1', name: '山田 太郎' };
@@ -228,16 +332,40 @@ function createFake(seed) {
       }
       if (name === 'tc_punch_add') out = { ok: true, id: 'p9', pending: args && args.p_src === 'calendar' };
       if (name === 'tc_my_punches') {
+        /* ★seed.punches … 実物の打刻をそのまま返す★（従業員の画面を実物で押すため） */
+        if (seed.punches) {
+          out = { name: '山田 太郎', punches: seed.punches.map(function (r, i) {
+            var row = punchRow('sp' + i, r);
+            return { id: row.id, at: row.at, kind: row.kind, src: row.src, pending: !row.approved_at,
+              ok_types: r[3] || [] };
+          }) };
+          return Promise.resolve({ data: out, error: null });
+        }
         out = {
           name: '山田 太郎',
           punches: [
-            { id: 'p1', at: '2026-08-03T00:00:00Z', kind: 'in', src: 'punch', pending: false },
-            { id: 'p2', at: '2026-08-03T11:00:00Z', kind: 'out', src: 'punch', pending: false },
-            { id: 'p3', at: '2026-08-04T00:30:00Z', kind: 'in', src: 'calendar', pending: true },
+            { id: 'p1', at: '2026-08-03T00:00:00Z', kind: 'in', src: 'punch', pending: false, ok_types: [] },
+            { id: 'p2', at: '2026-08-03T11:00:00Z', kind: 'out', src: 'punch', pending: false, ok_types: [] },
+            { id: 'p3', at: '2026-08-04T00:30:00Z', kind: 'in', src: 'calendar', pending: true, ok_types: [] },
           ],
         };
       }
-      if (name === 'tc_fix_request') out = { ok: true, id: 'f9' };
+      /* ★出したお願いを 溜めておく★（押しただけで終わっていないか・中身が正しいかを数える） */
+      if (name === 'tc_fix_request') { store.fixReq.push(args || {}); out = { ok: true, id: 'f9' }; }
+      if (name === 'tc_punch_add') store.punchAdd.push(args || {});
+      /* ★打った直後の取り消し★（2026-08-18）… ★倉庫は消さず voided_at の印を立てるだけ★。
+         seed.undoTooLate=true で「60秒を過ぎた」を作れる（画面が何と言うかを見る）。 */
+      /* ★「合っている」と答えた印★（2026-08-18）… 倉庫は打刻を1文字も動かさない */
+      if (name === 'tc_punch_ok') { store.okTime.push(args || {}); out = { ok: true }; }
+      /* ★直す・消す・足す は この1本★（2026-08-18 夜3）… ★締めた月は倉庫が断る★ */
+      if (name === 'tc_punch_edit') {
+        store.edit.push(args || {});
+        out = seed.empClosed ? { ok: false, closed: true, state: 'closed' } : { ok: true, id: 'p9' };
+      }
+      if (name === 'tc_punch_undo') {
+        store.undo.push(args || {});
+        out = seed.undoTooLate ? { ok: false, too_late: true } : { ok: true };
+      }
       return Promise.resolve({ data: out, error: null });
     },
     auth: {
@@ -255,4 +383,4 @@ function createFake(seed) {
   };
 }
 
-module.exports = { createFake: createFake, rowsFor: rowsFor };
+module.exports = { createFake: createFake, rowsFor: rowsFor, punchRow: punchRow };

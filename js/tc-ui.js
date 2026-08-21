@@ -84,16 +84,35 @@
       ・★四辺が同じ★なので 上でも左でも右でも ★2穴（端から約12mm）が余白に入る★
       ・★決めるのは ここ1か所だけ★（画面にも倉庫にも持たせない） */
   var PAGE_MARGIN_MM = 20;
+  /* ★A4横の幅（297mm）を 画面の点に直した数★ … 1mm = 96/25.4 点 → 297mm ＝ 1122.5点。
+     ★紙のとおりに見せる時の「画面の幅」★に使う（＝紙1枚がちょうど画面の幅に収まる）。
+     ★1点でも足りないと 横に滑る棒が出る★ので 切り上げる。 */
+  var PAPER_W_PX = Math.ceil(297 * 96 / 25.4);
 
-  function printPaper(title, bodyHtml) {
+  /** @param {{preview?:boolean}} [opt] preview=true … ★刷らずに 紙のまま見せる★
+   *  （2026-08-16 司さん「集計をA4横の紙で見せて 指で広げて読みたい」）
+   *  ★見せる物と刷る物は 同じこの関数から作る★＝別々に作ると必ずズレる。 */
+  function printPaper(title, bodyHtml, opt) {
+    var preview = !!(opt && opt.preview);
     var body = String(bodyHtml || '').trim();
-    if (!body) { toast('刷る中身がありません（先に対象を選んでください）'); return false; }
+    if (!body) { toast(preview ? '見せる中身がありません（先に対象を選んでください）' : '刷る中身がありません（先に対象を選んでください）'); return false; }
     var w = global.open('', '_blank');
     if (!w) { toast('新しい窓が開けませんでした（ポップアップの許可が要ります）'); return false; }
+    if (preview) body = '<div class="sheet">' + body + '</div>';
     w.document.open();
     w.document.write(
       '<!doctype html><html lang="ja"><head><meta charset="utf-8">'
-      + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+      /* ★紙のとおりに見せる時は 紙の幅(A4横=1123px)で見せる★
+         ＝スマホの幅に合わせて折り返すと ★刷った紙と違う物★になる。
+         ★maximum-scale は書かない★＝指で広げて端の列まで読める（ズームを禁止しない）。 */
+      /* ★紙の幅を そのまま「画面の幅」として渡す★＝端末が ★勝手に全体を縮めて収める★。
+         ★initial-scale は書かない★（2026-08-16 司さんの実機で 横に滑る棒が出た）
+         ＝ initial-scale を書くと ★端末の幅÷倍率★が採られて 紙より狭くなり、
+           右がわずかにはみ出して ★横スクロールが出る★。
+         ★maximum-scale も書かない★＝指で広げて 端の列まで読める。 */
+      + (preview
+        ? '<meta name="viewport" content="width=' + PAPER_W_PX + '">'
+        : '<meta name="viewport" content="width=device-width,initial-scale=1">')
       + '<title>' + esc(title) + '</title><style>'
       /* ★余白は @page だけ★（body にも margin を書くと ★二重になる★。
          2026-08-15 実測: 片側22mm（10+12）で 31日ぶんが ★3枚★ になっていた） */
@@ -134,11 +153,24 @@
          ★四辺とも20mm★なら どこに開けても 穴が余白に入る。
          ★プリンタの拡大縮小で余白が変わる★ので、刷る画面に「実際のサイズ（100%）で」と出している。 */
       + '@page{size:A4 landscape;margin:' + PAGE_MARGIN_MM + 'mm;}'
+      /* ★画面で見る時だけ 紙の形（A4横・四辺20mm）を そのまま描く★
+         ★刷る時は この飾りを全部 外す★＝紙は今までと1mmも変わらない。 */
+      + (preview
+        /* ★横に1点もはみ出させない★（司さんの実機で 横に滑る棒が出た）
+           ・紙の左右に余白（margin）を付けない ＝ 紙の幅＝画面の幅
+           ・影（box-shadow）は場所を取らないので そのまま */
+        ? '@media screen{html,body{max-width:100%;overflow-x:hidden;}body{background:#F0E0B8;}'
+          + '.sheet{width:297mm;max-width:100%;min-height:210mm;box-sizing:border-box;'
+          + 'padding:' + PAGE_MARGIN_MM + 'mm;'
+          + 'margin:0 auto;background:#FFFFFF;box-shadow:0 1px 6px rgba(0,0,0,.3);}}'
+          + '@media print{body{background:none;}.sheet{width:auto;min-height:0;padding:0;margin:0;box-shadow:none;}}'
+        : '')
       + '</style></head><body>' + body + '</body></html>'
     );
     w.document.close();
     w.focus();
-    setTimeout(function () { try { w.print(); } catch (e) { /* 端末が拒んでも窓は残す */ } }, 300);
+    /* ★見せるだけの時は 印刷ダイアログを開かない★ */
+    if (!preview) setTimeout(function () { try { w.print(); } catch (e) { /* 端末が拒んでも窓は残す */ } }, 300);
     return true;
   }
 

@@ -82,6 +82,10 @@ h3 { font-size: 14px; color: #8F6200; margin: 14px 0 6px; }
   padding: 10px 12px; margin: 8px 0;
 }
 
+/* ★うまく行った時の箱★（2026-08-16）＝赤は「間違い」だけに取っておく。
+   緑は全アプリ共通の #2E7D54 だけを使う（濃い緑は禁止色）。 */
+.tc-alert.ok { color: #2E7D54; border-color: #2E7D54; }
+
 /* ── 押す物 ─────────────────────────────────────────────────── */
 .tc-btn {
   display: inline-block;
@@ -136,6 +140,22 @@ h3 { font-size: 14px; color: #8F6200; margin: 14px 0 6px; }
 /* 打刻の大きいボタン（従業員） */
 .tc-punchgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
 .tc-punchgrid .tc-btn { width: 100%; min-height: 64px; font-size: 17px; }
+/* ★いま押してよい物だけ 大きく★（2026-08-18 司さん「出勤押してもないのに退勤おせるとか」）
+   ＝押せる物は 2列ぶんに広げる。押せない物は 灰色のまま小さく残す（なぜ押せないかを覚えてもらう）。 */
+.tc-punchgrid .tc-btn.main { grid-column: 1 / -1; min-height: 84px; font-size: 20px; }
+/* ★いまの状態★（出勤中／まだ出勤していません） */
+.tc-statenow {
+  display: block; margin: 10px 0; padding: 10px 12px;
+  border: 1.5px solid #F0B400; border-radius: 10px; background: #FFFBF0;
+  color: #2B2418; font-weight: 700; font-size: 15px; text-align: center;
+}
+/* ★打った直後だけ出る「取り消す」★（ここで直せば 会社には何も出ない） */
+.tc-undo {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 10px 0; padding: 10px 12px;
+  border: 1.5px solid #B3261E; border-radius: 10px; background: #FFFFFF;
+}
+.tc-undo .tc-undo-what { flex: 1 1 auto; font-size: 14px; color: #2B2418; }
 
 /* ── 入力欄（★16px★ 小さいと iPhone が拡大する） ───────────────── */
 input[type='text'], input[type='email'], input[type='password'],
@@ -215,6 +235,119 @@ table.tc td.warn { color: #B3261E; }
 .tc-card.pending { border-color: #B3261E; }
 .tc-card .tc-cardhead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .tc-card .tc-cardhead .tc-spacer { flex: 1 1 auto; }
+
+/* ── ★連打・打ち間違いを 画面が先に言う★（2026-08-18 司さんの実機の形） ────
+   ★数えない打刻は そもそも出さない★（2026-08-18 司さん「数えんのなら見せるなや」）／
+   ★決められない日は 赤で言う★（★黙って0にして小さくする★のが いちばん怖い）／
+   ★聞く所は 押すだけで決まる★（空欄を並べて埋めさせない）。
+   色は承認済みの物だけ（#78705C 補助文字 ／ #B3261E 注意 ／ #F0E0B8 淡境界）。 */
+.tc-note.warn { color: #B3261E; border-color: #B3261E; }
+.tc-card.ask { border-color: #B3261E; }
+.tc-ask { margin-top: 8px; padding-top: 8px; border-top: 1px dotted #F0E0B8; }
+.tc-askq { font-size: 14px; font-weight: 700; color: #2B2418; margin-bottom: 6px; }
+/* ★押すと どうなるかを ボタンのすぐ下に出す★（根拠を見せてから押させる） */
+.tc-askwhy { display: block; font-size: 12px; color: #78705C; margin: 2px 0 8px; }
+.tc-askpick { display: block; margin: 6px 0; }
+/* ★時刻の欄は 幅いっぱいにしない★（すぐ右のボタンと1行に並べる。字は16pxのまま） */
+.tc-askpick input { display: inline-block; width: auto; margin-right: 8px; }
+
+/* ★打刻の行を押すと「この時刻を直す」が開く★（2026-08-18 司さん「時刻を間違えた時」）
+   ★行そのものを押せる物にする★（別の所へ探しに行かせない）。 */
+.tc-punchrow { border-bottom: 1px dotted #F0E0B8; }
+.tc-rowbtn {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  min-height: 44px; padding: 4px 2px;
+  background: none; border: 0; font: inherit; color: #2B2418; text-align: left; cursor: pointer;
+}
+.tc-rowbtn .tc-punchline { flex: 1 1 auto; }
+.tc-rowbtn .tc-caret { flex: 0 0 auto; font-size: 12px; color: #8F6200; }
+.tc-rowbtn[aria-expanded='true'] { background: #FFE08A; }
+
+/* ── ★1人1行★（従業員が増えても画面が伸びない・2026-08-16 司さんの指摘） ──
+   前は 1人 194px（390×844 に ★2人★しか入らなかった＝実測）。
+   ★氏名＋状態＋「›」だけ★にして、押した人の分だけ 下を開く。 */
+.tc-row { border-bottom: 1px solid #F0E0B8; }
+.tc-rowhead {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  min-height: 44px;                      /* 指で押せる大きさは変えない */
+  padding: 8px 4px;
+  background: none; border: 0; font: inherit; color: #2B2418;
+  text-align: left; cursor: pointer;
+}
+.tc-rowhead .tc-rowname { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-rowhead .tc-chev { color: #78705C; font-size: 18px; line-height: 1; }
+.tc-rowhead[aria-expanded='true'] .tc-chev { transform: rotate(90deg); display: inline-block; }
+.tc-rowbody { padding: 0 4px 10px; }
+
+/* ★何が分かる画面かの1行★（見出しの下・本文と同じ薄い黒） */
+.tc-lead { font-size: 13px; color: #2B2418; margin: 8px 0; }
+
+/* ── ★日ごと：狭い画面はカレンダー／広い画面は17列の表★（2026-08-17 司さんの決定） ──
+   ★列を隠す作りは やめた★（2026-08-16 の「仲間ごと隠す」は ★省いている★ので取り下げ）。
+   ★カレンダーは締め期間★（締め日の翌日〜締め日）。★締め日が いつも最後のマス★。
+   ★日を押すと その日の17項目が全部 出る★＝★省くのではなく 畳む★。 */
+.tc-cal, .tc-daybox, .tc-scrollhint { display: none; }
+@media (max-width: 899px) {
+  /* ★.tc-daybox を書き忘れて 実配信で「押しても何も出ない」を作った★（2026-08-17）
+     ＝DOMには在って hidden も外れているのに ★display:none のまま★だった。
+     ★「在る」と「見える」は別★（うちで何度も踏んだ型）。 */
+  .tc-cal, .tc-scrollhint, .tc-daybox { display: block; }
+  #daily-wrap { display: none; }              /* 狭い画面では 17列の表は出さない */
+}
+@media (min-width: 900px) {
+  #daily-wrap { display: block; }             /* ★広い画面は 17列 全部★（隠しっぱなしにしない） */
+}
+.cal-g { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.cal-h { text-align: center; font-size: 11px; color: #78705C; padding: 2px 0; }
+.cal-h.sun { color: #B3261E; }
+.cal-h.sat { color: #8F6200; }
+.cal-c {
+  min-height: 46px; padding: 2px 3px;
+  border: 1px solid #F0E0B8; border-radius: 6px; background: #FFFFFF;
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+  font: inherit; color: #2B2418; cursor: pointer;
+}
+.cal-c .d { font-size: 11px; color: #78705C; }
+.cal-c .h { font-family: 'DM Mono', ui-monospace, monospace; font-size: 12px; font-weight: 700; }
+.cal-c .h.none { color: #78705C; font-weight: 400; }
+.cal-c .sh { font-size: 9px; color: #8F6200; }
+/* ★休みの網は2段★（2026-08-17 指示役）＝★法定休日は 休日の割増(35%)が付く★ので
+   ★土日と同じ濃さにしない★。★色ではなく 濃さで分ける★（白黒でも2段が残る）。 */
+.cal-c.rest-w { background: #F0E0B8; }        /* 薄い網＝土日（所定休日） */
+.cal-c.rest-h { background: #D4BC72; }        /* 濃い網＝法定休日 */
+/* ★直さないと数字が出ない日★（打刻が片方だけ）。★文字「？」が主で、枠は添え物★ */
+.cal-c.fix { border: 2px solid #B3261E; }
+/* ★締め日★ … 下に太い線＋「締」 */
+.cal-c.shime { border-bottom: 3px solid #8F6200; }
+/* ★月が変わる所に線1本★ */
+.cal-c.newmonth { border-left: 2px solid #8F6200; }
+/* ★期間の外は 空・薄く・押せない★ */
+.cal-c.out { background: none; border-color: transparent; pointer-events: none; cursor: default; }
+/* ★黄を塗るのは「今 選ばれている1つ」だけ★（タブと同じ決まり） */
+.cal-c[aria-selected='true'] { background: #FFE08A; border-color: #F0B400; }
+
+/* ★押した日の中身★ … ★1カラム／ラベル左・値右／仲間の見出し中央★（給料明細と同じ作法） */
+.tc-daybox {
+  border: 1px solid #F0E0B8; border-radius: 12px; background: #FFFFFF;
+  padding: 10px 12px; margin: 10px 0;
+}
+@media (min-width: 900px) { .tc-daybox { display: none; } }
+/* ★広い画面でも 日を押したら 出す★（2026-08-21 指示役が実配信で見つけた）
+   ＝広い画面は17列の表になり、★カレンダーごと消えるので 有給を付ける所が どこにも無かった★。
+   表の行を押した時は この箱を出す（★同じ箱・同じ中身★＝2つ作らない）。 */
+.tc-daybox.open { display: block; }
+/* 表の行は 押せる物だと分かるように */
+@media (min-width: 900px) { #daily tbody tr { cursor: pointer; } }
+.tc-daybox .day-h { font-weight: 700; margin-bottom: 6px; }
+.tc-daybox .day-g { text-align: center; font-size: 11px; color: #78705C; margin: 8px 0 2px; }
+.tc-daybox .day-l {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-size: 13px; padding: 3px 0; border-bottom: 1px dotted #F0E0B8;
+}
+.tc-daybox .day-l .k { color: #78705C; }
+.tc-daybox .day-l .v { font-family: 'DM Mono', ui-monospace, monospace; }
+
+.tc-scrollhint { font-size: 12px; color: #78705C; margin: 6px 0; line-height: 1.7; }
 
 /* ── タブ ───────────────────────────────────────────────────── */
 .tc-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
