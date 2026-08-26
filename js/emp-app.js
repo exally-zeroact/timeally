@@ -354,6 +354,9 @@
     begin(function () {
       st.ym = (DB.nowJst() || '').slice(0, 7);
       _wantDay = param('d');
+      /* ★渡された日が 別の月なら その月を開く★（2026-08-22）
+         ＝ d=2026-07-10 で開いても 今月のまま並び、その日が見つからなかった。 */
+      if (/^\d{4}-\d{2}-\d{2}$/.test(_wantDay)) st.ym = _wantDay.slice(0, 7);
       var link = q('to-punch');
       if (link) link.href = 'punch.html?t=' + encodeURIComponent(st.token);
       var wrap = q('ad-wrap');
@@ -462,7 +465,11 @@
     }).join('');
     return '<div class="tc-ask">' + head
       + '<div class="tc-askrow">' + btns
-      + '<span class="tc-askpick"><input type="time" step="60" id="fix-t" />'
+      /* ★元の時刻を 欄に入れておく★（2026-08-22 指示役⑨）
+         ＝空から選ばせると ★今 何時で入っているか★が見えない（④の入社日と同じ型）。
+         ★同じ時刻のままでは「直す」は押せない★（下の draw2 が止める）。 */
+      + '<span class="tc-askpick"><input type="time" step="60" id="fix-t"'
+      + ' value="' + U.esc(global.TcClean.hmOf(p.at)) + '" />'
       + '<button class="tc-btn sub" type="button" id="fix-pick">この時刻にする</button></span>'
       + '</div>'
       + '<div class="tc-note" id="fix-why"></div>'
@@ -486,13 +493,16 @@
     var picked = { hm: '' };
     var send = q('fix-send'), note = q('fix-why'), tin = q('fix-t');
     var K = KIND_LABEL[p.kind] || p.kind;
+    var was = global.TcClean.hmOf(p.at);          /* ★今 入っている時刻★（欄の初めの値） */
     var draw2 = function () {
-      var ok = !!picked.hm;
+      var same = !!picked.hm && picked.hm === was;
+      var ok = !!picked.hm && !same;
       if (note) {
         note.textContent = ok
-          ? global.TcClean.mdOf(global.TcClean.dayOf(p.at)) + ' の ' + global.TcClean.hmOf(p.at)
+          ? global.TcClean.mdOf(global.TcClean.dayOf(p.at)) + ' の ' + was
             + ' ' + K + ' を ' + picked.hm + ' に直します'
-          : '直したい時刻を選んでください';
+          : (same ? '今と同じ時刻です（' + was + '）。直す時は 時刻を変えてください'
+            : '直したい時刻を選んでください');
         note.hidden = false;
       }
       if (send) send.disabled = !ok;
@@ -510,7 +520,7 @@
         if (!picked.hm) { draw2(); return; }
         var day = global.TcClean.dayOf(p.at);
         apply({ id: p.id, at: day + 'T' + picked.hm, done: '直しました。',
-          why: global.TcClean.mdOf(day) + ' の ' + global.TcClean.hmOf(p.at) + ' ' + K
+          why: global.TcClean.mdOf(day) + ' の ' + was + ' ' + K
             + ' を ' + picked.hm + ' に直しました' });
       };
     }
@@ -662,12 +672,20 @@
     var lab = q('ymlabel');
     if (lab) lab.textContent = st.ym.replace('-', '年') + '月';
     /* ★見ている月が締め切られているかを 倉庫に聞く★
-       （今日の分だけ見ていると、前の月を開いた人に何も出ない） */
+       （今日の分だけ見ていると、前の月を開いた人に何も出ない）
+       ★状態(state)も その月の物に入れ替える★（2026-08-22 実配信で見つけた）
+       ＝入れ替えていなかったので、確定した月を開いても ★今日の月の状態★のままで
+         「直す」が47個 出て、押すと開き、最後に倉庫が断っていた＝★押させてから断る★形。
+       ★聞き終わってから 並べる★（先に並べると 古い状態のままボタンを描く）。 */
     DB.Emp.info(st.token, st.ym + '-15').then(function (i) {
+      st.state = (i && i.state) || 'open';
       st.notice = (i && i.notice) || '';
       drawNotice();
       drawYukyu(i);
-    }).catch(function () { /* 聞けなくても 記録の表示は止めない */ });
+    }).catch(function () { /* 聞けなくても 記録の表示は止めない */ })
+      .then(function () { drawList(); });
+  }
+  function drawList() {
     var from = st.ym + '-01';
     var to = new Date(Date.UTC(+st.ym.slice(0, 4), +st.ym.slice(5, 7), 0)).toISOString().slice(0, 10);
     DB.Emp.mine(st.token, st.device, st.pw, from, to).then(function (r) {
@@ -696,10 +714,13 @@
       box.innerHTML = days.map(function (day) {
         var info = res.byDay[day] || { asks: [] };
         /* ★出るのは 数える打刻だけ★（札も説明も要らない＝行を押せば 直す・消すが出る） */
+        var canFixNow = global.TcClean.canFix({ state: st.state }).ok;
         var rows = (byDay[day] || []).map(function (p) {
           var head = '<span class="tc-punchline">'
             + U.esc(p.at.slice(11, 16)) + '　' + U.esc(KIND_LABEL[p.kind] || p.kind) + '</span>';
-          if (!p.id) return '<div>' + head + '</div>';
+          /* ★直せない月は 押せる物にしない★（2026-08-22）＝理由は上の1行（締め切りました）から。
+             ★押させてから断る★のをやめる（08-18「押せなくする作り」と同じ決め）。 */
+          if (!p.id || !canFixNow) return '<div>' + head + '</div>';
           return '<div class="tc-punchrow">'
             + '<button type="button" class="tc-rowbtn" data-pid="' + U.esc(p.id) + '"'
             + ' aria-expanded="' + (_openPid === p.id ? 'true' : 'false') + '">'
@@ -749,6 +770,11 @@
   }
   function drawAdd() {
     var box = q('add-box'), open = q('b-addopen');
+    var fix = global.TcClean.canFix({ state: st.state });
+    /* ★足せない月は 口ごと出さない★（2026-08-22）＝理由は上の1行から。
+       開けて 中で断るのは ★押させてから断る★（08-18 の決まりに反する）。 */
+    if (open) open.hidden = !fix.ok;
+    if (!fix.ok) _addOpen = false;
     if (box) box.hidden = !_addOpen;
     if (open) {
       open.setAttribute('aria-expanded', String(_addOpen));
@@ -756,8 +782,7 @@
     }
     var v = addLater0(), b = q('b-add'), note = q('add-why');
     var msg = '', ok = false;
-    var fix = global.TcClean.canFix({ state: st.state });
-    if (!fix.ok) msg = fix.why;                           // ★締めた後は 足せない★
+    if (!fix.ok) msg = '';                                // ★口ごと消したので 中の説明も出さない★
     else if (!v.day) msg = '日を選んでください';
     else if (!v.hm) msg = '時刻を選んでください';
     else if (!v.kind) msg = 'どれかを選んでください';

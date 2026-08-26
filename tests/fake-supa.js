@@ -290,7 +290,7 @@ function createFake(seed) {
   var store = {
     tc_close: (seed.closeLog || []).slice(),
     /* ★従業員が出した「お願い」と「後から入れた打刻」と「打った直後の取り消し」★（2026-08-18） */
-    fixReq: [], punchAdd: [], undo: [], okTime: [], edit: [],
+    fixReq: [], punchAdd: [], undo: [], okTime: [], edit: [], editOwner: [],
     clock: function () { tick++; return '2026-08-15T' + ('0' + (9 + tick)).slice(-2) + ':00:00Z'; },
   };
   return {
@@ -362,6 +362,12 @@ function createFake(seed) {
         store.edit.push(args || {});
         out = seed.empClosed ? { ok: false, closed: true, state: 'closed' } : { ok: true, id: 'p9' };
       }
+      /* ★社長が直す口★（2026-08-22）＝本物と同じ返り方をさせる（見本が嘘をつかないように） */
+      if (name === 'tc_punch_edit_owner') {
+        store.editOwner = store.editOwner || [];
+        store.editOwner.push(args || {});
+        out = seed.closedYm ? { ok: false, closed: true, state: 'closed' } : { ok: true, id: 'p9' };
+      }
       if (name === 'tc_punch_undo') {
         store.undo.push(args || {});
         out = seed.undoTooLate ? { ok: false, too_late: true } : { ok: true };
@@ -373,6 +379,14 @@ function createFake(seed) {
       getUser: function () {
         calls.push('auth.getUser');
         return Promise.resolve({ data: { user: seed.noUser ? null : { id: 'u1', email: 'a@example.com' } }, error: null });
+      },
+      /* ★本物と同じ口を持たせる★（2026-08-22）＝読む前に鍵を待つ作りを 見本でも通す。
+         ここに口が無いと「本物では動くのに 見本で落ちる」＝見本が嘘をつく。 */
+      getSession: function () {
+        calls.push('auth.getSession');
+        return Promise.resolve({
+          data: { session: seed.noUser ? null : { user: { id: 'u1', email: 'a@example.com' } } }, error: null,
+        });
       },
       signInWithPassword: function () { calls.push('auth.signIn'); return Promise.resolve({ data: {}, error: null }); },
       signUp: function () { calls.push('auth.signUp'); return Promise.resolve({ data: {}, error: null }); },

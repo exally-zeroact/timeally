@@ -278,6 +278,10 @@ table.tc td.warn { color: #B3261E; }
 .tc-rowhead .tc-chev { color: #78705C; font-size: 18px; line-height: 1; }
 .tc-rowhead[aria-expanded='true'] .tc-chev { transform: rotate(90deg); display: inline-block; }
 .tc-rowbody { padding: 0 4px 10px; }
+/* ★入社日は あとから直せる（従業員の箱の中の1行）★
+   ＝年まで見せる（どの年かで有給の日数が変わる）。押す物は「この日にする」1つだけ。 */
+.tc-hire { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; color: #2B2418; margin: 6px 0 2px; }
+.tc-hire b { color: #2B2418; }
 
 /* ★何が分かる画面かの1行★（見出しの下・本文と同じ薄い黒） */
 .tc-lead { font-size: 13px; color: #2B2418; margin: 8px 0; }
@@ -346,6 +350,19 @@ table.tc td.warn { color: #B3261E; }
 }
 .tc-daybox .day-l .k { color: #78705C; }
 .tc-daybox .day-l .v { font-family: 'DM Mono', ui-monospace, monospace; }
+/* ★社長も その日の打刻を直す（2026-08-22）★＝1行1打刻・押す物は右に寄せる */
+/* ★押す物を横に並べる箱★（2026-08-26 司さん「隙間つくれや 圧迫感すごい」）
+   ＝有給/欠勤の2つが くっついていた。★間は gap・上は margin で離す★。
+   ★狭い画面で 字が縦に割れない事を 実測して決めた★（375/390/412 で 1行のまま）。 */
+.tc-daybox .day-btns { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0 4px; }
+.tc-daybox .day-btns .tc-btn { flex: 0 0 auto; }
+.tc-daybox .pf-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 0;
+  border-bottom: 1px dotted #F0E0B8; }
+.tc-daybox .pf-row .pf-t { font-family: 'DM Mono', ui-monospace, monospace; color: #2B2418; }
+.tc-daybox .pf-row .pf-k { color: #2B2418; flex: 1 1 auto; }
+.tc-daybox .pf-edit { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 0 8px; }
+.tc-daybox .pf-edit input[type='time'], .tc-daybox .pf-edit select { font-size: 16px; }
+.tc-daybox .pf-edit .tc-note { flex: 1 0 100%; }
 
 .tc-scrollhint { font-size: 12px; color: #78705C; margin: 6px 0; line-height: 1.7; }
 

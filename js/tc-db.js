@@ -56,6 +56,10 @@
       return client().auth.getUser().then(function (r) { return r.data && r.data.user; });
     },
     onChange: function (fn) { return client().auth.onAuthStateChange(fn); },
+    /** ★鍵が読めるようになるまで待つ★（読む前に1回・登録した直後の401よけ） */
+    session: function () {
+      return client().auth.getSession().then(function (r) { return r.data && r.data.session; });
+    },
   };
 
   /* ★ログインが切れた（401 / JWT expired）を見分ける★
@@ -74,22 +78,37 @@
     return e;
   }
 
-  /* ── 読み（★全部めくって取る★） ────────────────────────────── */
+  /* ── 読み（★全部めくって取る★） ──────────────────────────────
+     ★鍵が付く前に読むと 401 が返る★（2026-08-22 実測。中身は 42501＝権限なし）
+       ＝supabase-js は 倉庫の鍵を localStorage から ★後から★ 読み込む。
+         その前に出た読みは ★anon のまま★ 飛び、倉庫は 401 を返す。
+         画面はそれを「ログアウトした」と受け取り、★理由も出さずに ログイン画面へ戻していた★
+         （★登録した直後の1回だけ★ 実配信で出た。2人目では出ない＝もう鍵が在るから）。
+     ⇒ ★1回だけ 鍵を待って 読み直す★（人には何も出さない）。
+       それでも 401 なら 本当に切れているので そのまま投げる。 */
   function selectAll(table, build) {
-    var rows = [], from = 0;
-    function step() {
-      var q = client().from(table).select('*');
-      if (build) q = build(q);
-      return q.range(from, from + PAGE - 1).then(function (r) {
-        if (r.error) throw wrapError(table, r.error);
-        var got = r.data || [];
-        rows = rows.concat(got);
-        if (got.length < PAGE) return rows;
-        from += PAGE;
-        return step();
-      });
+    var retried = false;
+    function run() {
+      var rows = [], from = 0;
+      function step() {
+        var q = client().from(table).select('*');
+        if (build) q = build(q);
+        return q.range(from, from + PAGE - 1).then(function (r) {
+          if (r.error) throw wrapError(table, r.error);
+          var got = r.data || [];
+          rows = rows.concat(got);
+          if (got.length < PAGE) return rows;
+          from += PAGE;
+          return step();
+        });
+      }
+      return step();
     }
-    return step();
+    return run().catch(function (e) {
+      if (retried || !e || !e.auth) throw e;
+      retried = true;
+      return client().auth.getSession().then(run);
+    });
   }
 
   /* ── 会社情報 ──────────────────────────────────────────────── */
@@ -265,6 +284,19 @@
   }
 
   /** 記録を1行 足す。action は close / reopen / export / pin_reissue のどれか */
+  /** ★社長が その人の打刻を 直す・消す・足す★（2026-08-22 司さん）
+   *  ★門は倉庫の側★（締めた月は断る）＝画面だけで止めない。
+   *  直す … id と 新しい時刻／種類（どちらか片方でよい）
+   *  消す … id だけ（★行は消えない＝印が立つだけ★）
+   *  足す … id を渡さず 誰の・いつ・種類 */
+  function editPunchOwner(employeeId, id, wallTime, kind, why, note) {
+    return rpc('tc_punch_edit_owner', {
+      p_employee: employeeId || null, p_id: id || null,
+      p_at: wallTime ? fromJst(wallTime) : null, p_kind: kind || null,
+      p_reason: why || '', p_note: note || '',
+    });
+  }
+
   function addCloseLog(row) {
     return client().from('tc_close').insert(row).select()
       .then(function (r) { if (r.error) throw wrapError('tc_close', r.error); return (r.data || [])[0]; });
@@ -336,5 +368,6 @@
     listFixes: listFixes, approveFix: approveFix, rejectFix: rejectFix,
     loadShifts: loadShifts, loadShiftsAll: loadShiftsAll, saveShift: saveShift, saveDayBreak: saveDayBreak, saveDayKind: saveDayKind,
     listCloseLog: listCloseLog, addCloseLog: addCloseLog, listPinLog: listPinLog,
+    editPunchOwner: editPunchOwner,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

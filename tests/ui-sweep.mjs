@@ -525,6 +525,124 @@ T('★★日を押すと その日の結論が1行 出る（08:00〜17:03（実�
     ok(btns[0].getAttribute('data-yk') === 'work', '★戻す先が work でない★');
     console.log('     実測: 有給の日を開くと 「' + btns[0].textContent.trim() + '」1個だけ');
   });
+
+  /* ★欠勤の口★（2026-08-22 指示役の裁定⑥）
+     ＝「欠」の印・月計・給与CSVの欠勤欄は前から在るのに ★付ける口だけ無かった★。
+     ★条件★ 有給と同じ箱／同時に立たない／締めた後は出さない／理由・種類は作らない。 */
+  T('★★何でもない日は「有給にする」「欠勤にする」の2つだけ（他は増やさない）★★', () => {
+    const cells = [...d2.querySelectorAll('#cal [data-day]')];
+    const plain = cells.filter((b) => !/有|欠|締/.test(b.textContent))[0];
+    ok(plain, '★印の無い日が1つも無い★');
+    plain.click();
+    const btns = [...d2.querySelectorAll('#cal-day [data-yk]')];
+    ok(btns.length === 2, '★押す物が ' + btns.length + '個（2個のはず）★');
+    ok(btns.map((b) => b.textContent.trim()).join('／') === '有給にする／欠勤にする',
+      '言葉が違う: ' + btns.map((b) => b.textContent.trim()).join('／'));
+    console.log('     実測: 押す物 ' + btns.map((b) => b.textContent.trim()).join('／'));
+  });
+
+  T('★★「欠勤にする」を押したら 倉庫に absent が書かれた（誰が・いつ 付き）★★', () => {
+    const before = (p.fake._saved || []).filter((x) => x.table === 'tc_shift').length;
+    const btn = [...d2.querySelectorAll('#cal-day [data-yk]')].filter((b) => /欠勤にする/.test(b.textContent))[0];
+    ok(btn, '★欠勤にする が無い★');
+    btn.click();
+    const rows = (p.fake._saved || []).filter((x) => x.table === 'tc_shift');
+    ok(rows.length === before + 1, '★押したのに 倉庫へ行っていない★（' + before + '→' + rows.length + '）');
+    const row = rows[rows.length - 1].row;
+    ok(row.day_kind === 'absent', '★欠勤として書いていない★: ' + row.day_kind);
+    ok(row.day_kind_by && row.day_kind_at, '★誰が・いつ が残っていない★');
+    console.log('     実測: ' + row.d + ' → ' + row.day_kind + '（誰が: 有り／いつ: 有り）');
+  });
+
+  T('★★欠勤の日は「欠勤をやめる」1つだけ（有給と同時に立たない）★★', () => {
+    const cells = [...d2.querySelectorAll('#cal [data-day]')];
+    const ke = cells.filter((b) => /欠/.test(b.textContent))[0];
+    ok(ke, '★欠勤の印が付いた日が1つも無い★');
+    ke.click();
+    const btns = [...d2.querySelectorAll('#cal-day [data-yk]')];
+    ok(btns.length === 1, '★押す物が ' + btns.length + '個（1個のはず）★');
+    ok(btns[0].textContent.trim() === '欠勤をやめる', '言葉が違う: ' + btns[0].textContent);
+    ok(btns[0].getAttribute('data-yk') === 'work', '★戻す先が work でない★');
+    const t = d2.getElementById('cal-day').textContent;
+    ok(!/有給です/.test(t), '★欠勤の日なのに「有給です」が出ている★');
+    console.log('     実測: 欠勤の日を開くと 「' + btns[0].textContent.trim() + '」1個だけ');
+  });
+}
+
+/* ★★社長も その日の打刻を 直す・消す・足す★★（2026-08-22 司さん
+   「社長の画面からやけど ここからも個人の出勤や退勤など修正できるようにした方がいい」）
+   ★決まりは増やさない★＝言葉は 直す・消す・足す の3つのまま／締めた月は 口ごと出さない。 */
+{
+  const p = openPage('shukei.html', '', { days: 31, ym: '2026-08', closeDay: 31, mix: true });
+  await wait(); await wait(); await wait();
+  const d2 = p.w.document;
+  const cells = () => [...d2.querySelectorAll('#cal [data-day]')];
+  const openWorked = () => {
+    const c = cells().filter((b) => /:/.test(b.textContent))[0];
+    ok(c, '★打刻のある日が1つも無い（試験の種を見直す）★');
+    c.click();
+    return d2.getElementById('cal-day');
+  };
+
+  T('★★打刻のある日を開くと 1行1打刻で「直す／消す」＋「足す」が出る★★', () => {
+    const box = openWorked();
+    const rows = [...box.querySelectorAll('.pf-row')];
+    const fix = [...box.querySelectorAll('[data-pf]')].filter((b) => b.textContent.trim() === '直す');
+    const drop = [...box.querySelectorAll('[data-pfdrop]')];
+    ok(rows.length >= 2, '★行が出ていない★（' + rows.length + '）');
+    ok(fix.length === drop.length && fix.length >= 1, '★直すと消すの数が合わない★（' + fix.length + '/' + drop.length + '）');
+    ok([...box.querySelectorAll('[data-pf]')].some((b) => /足す/.test(b.textContent)), '★足す口が無い★');
+    console.log('     実測: 打刻 ' + fix.length + '本（直す/消す）＋足す1つ');
+  });
+
+  T('★★「直す」を開くと 今の時刻と種類が入っている／同じままでは押せない★★', () => {
+    const box = d2.getElementById('cal-day');
+    const b = [...box.querySelectorAll('[data-pf]')].filter((x) => x.textContent.trim() === '直す')[0];
+    b.click();
+    const t = d2.getElementById('pf-t'), k = d2.getElementById('pf-k'), go = d2.getElementById('pf-go');
+    ok(t && k && go, '★開かない★');
+    ok(/^\d{2}:\d{2}$/.test(t.value), '★時刻が空のまま★: ' + t.value);
+    ok(k.value === 'in' || k.value === 'out' || /^(break|away)_/.test(k.value), '★種類が入っていない★');
+    ok(go.disabled, '★同じままなのに 押せる★');
+    ok(/今と同じです/.test(d2.getElementById('pf-why').textContent), '理由が出ていない');
+    console.log('     実測: 時刻 ' + t.value + ' / 種類 ' + k.value + ' / 押せない（今と同じ）');
+  });
+
+  T('★★種類を変えると押せて、倉庫へ「会社が直す」口が飛ぶ★★', () => {
+    const k = d2.getElementById('pf-k'), go = d2.getElementById('pf-go');
+    const before = (p.fake._store.editOwner || []).length;
+    k.value = k.value === 'in' ? 'out' : 'in';
+    k.dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    ok(!go.disabled, '★変えたのに 押せない★');
+    go.click();
+    const rows = p.fake._store.editOwner || [];
+    ok(rows.length === before + 1, '★倉庫へ行っていない★（' + before + '→' + rows.length + '）');
+    const a = rows[rows.length - 1];
+    ok(a.p_id, '★どの打刻かを渡していない★');
+    ok(a.p_kind, '★種類を渡していない★');
+    ok(a.p_employee, '★誰の分かを渡していない★');
+    console.log('     実測: 倉庫へ ' + JSON.stringify({ 種類: a.p_kind, 誰: a.p_employee }));
+  });
+}
+
+/* ★締めた月は 社長も 打刻を直せない（口ごと出さない）★ */
+{
+  const p = openPage('shukei.html', '', { mix: true, ym: '2026-07', closedYm: '2026-07' });
+  await wait(); await wait(); await wait();
+  T('★★締めた月は「打刻を直す」の口ごと出さない（理由は締めの1か所から）★★', () => {
+    const d3 = p.w.document;
+    const cell = [...d3.querySelectorAll('#cal [data-day]')][0];
+    cell.click();
+    const box = d3.getElementById('cal-day');
+    ok([...box.querySelectorAll('[data-pf],[data-pfdrop]')].length === 0,
+      '★締めた月なのに 打刻を直す口が出ている★');
+    ok(!/打刻を直す/.test(box.textContent), '★見出しだけ残っている★');
+    /* ★理由は 締めの1か所（画面の上の箱）★＝日の箱の中では繰り返さない（2026-08-24 指示役②） */
+    const why1 = d3.getElementById('cwhy');
+    ok(why1 && /確定しています/.test(why1.textContent), '★理由が1か所にも出ていない★');
+    ok(!/確定しています/.test(box.textContent), '★同じ理由を 日の箱でも繰り返している★');
+    console.log('     実測: 押す物 0個／理由は締めの1か所「' + why1.textContent.trim().slice(0, 24) + '…」');
+  });
 }
 
 /* ★締めた月は 有給も 付けられない（可否は締めの1か所から聞く）★ */
@@ -539,10 +657,19 @@ T('★★日を押すと その日の結論が1行 出る（08:00〜17:03（実�
     const box = d3.getElementById('cal-day');
     const btns = [...box.querySelectorAll('[data-yk]')];
     ok(btns.length === 0, '★締めた月なのに 押せる★（' + btns.length + '個）');
-    /* ★理由は 締めの1か所（lib/tc-close.js）が作る文★＝ここで言い換えない */
-    ok(/確定しています/.test(box.textContent), '★理由が出ていない★: ' + box.textContent.slice(-100));
-    console.log('     実測: 押す物 0個／理由「'
-      + (/この月は[^]*?要ります/.exec(box.textContent) || [''])[0] + '」');
+    /* ★理由は 締めの1か所（lib/tc-close.js）が作る文★＝ここで言い換えない・繰り返さない。
+       ★2026-08-24 指示役②★ 締めた日に「まだ数えられません（入社日が入っていません）」という
+       ★別の理由★が並んでいた（締めているからではない文）＝読む人が迷うので 出さなくした。 */
+    const why2 = d3.getElementById('cwhy');
+    ok(why2 && /確定しています/.test(why2.textContent), '★理由が1か所にも出ていない★');
+    /* ★当て所は「残りの行そのもの」★＝人によって文が変わる（23日／まだ数えられません）ので
+       ★文字で探すと 種によって空振りする★。★行を出していない事★を数える。 */
+    ok(!/有給の残り/.test(box.textContent),
+      '★締めた月なのに 有給の残りの行が出ている★: ' + box.textContent.slice(-80));
+    ok(!/まだ数えられません|入社日が入っていません/.test(box.textContent),
+      '★締めた日に 別の理由が並んでいる★: ' + box.textContent.slice(-80));
+    console.log('     実測: 押す物 0個／別の理由 0件／理由は締めの1か所「'
+      + why2.textContent.trim().slice(0, 24) + '…」');
   });
 }
 
@@ -1127,28 +1254,37 @@ T('★あとから入れる は その場で入る（お願いにしない・跡
   const T_URL2 = '?t=11111111-1111-1111-1111-111111111111';
   const pA = openPage('kiroku.html', T_URL2, SEED);
   await wait(); await wait(); await wait();
-  const rA = pA.w.document.querySelector('[data-pid]');
-  if (rA) rA.click();
+  const rowsA = [...pA.w.document.querySelectorAll('[data-pid]')];
+  if (rowsA[0]) rowsA[0].click();
   await wait(); await wait();
   const dropA = pA.w.document.getElementById('fix-drop');
   if (dropA) dropA.click();
   await wait(); await wait();
 
-  T('★★締めた月は 押しても入らない／理由を出す★★', () => {
+  /* ★2026-08-22 直した★＝前は「押させてから断る」形を検査していた
+     （締めた月でも「直す」が並び、押して開いて 最後に倉庫が断る）。
+     ★今の決まりは 08-18 の「今の状態で押せる物しか出さない」★＝
+     ★押す物は そもそも出さない／理由は 上の1行に出す★（有給の箱と同じ形）。 */
+  T('★★締めた月は 直す物を そもそも出さない／理由を出す★★', () => {
     const ed = pA.fake._store.edit, req = pA.fake._store.fixReq;
     ok(ed.length === 0, '★締めた月なのに 倉庫へ送っている★（' + ed.length + '件）');
     ok(req.length === 0, '★お願いの道が まだ生きている★（' + req.length + '件）');
-    const toast = (pA.w.document.querySelector('.tc-toast') || {}).textContent || '';
-    ok(/締めたので直せません/.test(toast), '★理由を出していない★: ' + toast);
-    console.log('     実測: 送った 0件／出た言葉「' + toast + '」');
+    ok(rowsA.length === 0, '★締めた月なのに 押せる打刻が出ている★（' + rowsA.length + '個）');
+    const note = pA.w.document.getElementById('closed-note');
+    ok(note && !note.hidden && /締め切りました/.test(note.textContent),
+      '★理由を出していない★: ' + (note ? note.textContent : 'closed-note が無い'));
+    console.log('     実測: 押せる打刻 0個／送った 0件／理由「' + (note ? note.textContent.trim() : '') + '」');
   });
 
-  T('★★締めた月は「足す」も押せない（理由つき）★★', () => {
+  T('★★締めた月は「あとから入れる」の口ごと出さない／理由を出す★★', () => {
     const d2 = pA.w.document;
-    d2.getElementById('b-addopen').click();
-    ok(d2.getElementById('b-add').disabled, '★締めた月なのに 足せる★');
-    ok(/締めたので直せません/.test(d2.getElementById('add-why').textContent),
-      '理由が出ていない: ' + d2.getElementById('add-why').textContent);
+    const open = d2.getElementById('b-addopen');
+    ok(open.hidden, '★締めた月なのに「あとから入れる」が出ている★');
+    ok(d2.getElementById('add-box').hidden, '★中の欄が開いている★');
+    const note = d2.getElementById('closed-note');
+    ok(note && !note.hidden && /締め切りました/.test(note.textContent),
+      '理由が出ていない: ' + (note ? note.textContent : 'closed-note が無い'));
+    console.log('     実測: 口 0個／理由「' + note.textContent.trim() + '」');
   });
 }
 
