@@ -18,11 +18,29 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # ★ここは「必ず 測る場所」です（2026-09-06 指示役の裁定）★
+    #   ＝ブラウザが 見つからなかったら ★未測定で 通さず 赤にする★。
+    #   ★理由★ … Chrome が 在るのは ★GitHub の機械の都合★で、向こうの都合で 変わります。
+    #   その時 ★黙って「未測定・緑」になるのが 一番 悪い★（赤なら 1行 足すだけで 直せる）。
+    #   ★job に 1回だけ 立てる★（step ごとに 書かない＝写し忘れを 作らない）
+    env:
+      MEASURE_REQUIRED: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+
+      # ★本番の 中身は テスト線で 押されて CI 緑だった 1つの commit と 同じか（2026-10-20）★
+      #   テスト線では「写した印が 無いか」だけ。本番では 印の SHA が main の 祖先か・CI 緑か・木が 同じか
+      #   （GitHub の 返事を 読むので 鍵を 渡す＝読むだけ。無いと 数が 限られる）
+      #   ★依存を 入れる 前に 置く★＝npm install が package-lock.json を 書き換えても 木の 比べに 混ぜない
+      - name: ★本番とテスト線のコードが同じか (写した印の commit と 木を 比べる)
+        run: node tests/mirror-match.test.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: ★本番とテスト線のコードが同じか (余り・足りない・1字・設定に1行・刻印 以外の 違いで 赤になるかの自己確認)
+        run: node tests/mirror-match.test.mjs --self-test
 
       # ★依存は「使う前」に入れる★
       #   CIは毎回まっさらなので、node_modules が無いと jsdom を使う検査が SKIP になる。
@@ -35,6 +53,8 @@ jobs:
         run: node scripts/stamp-build.mjs --check
       - name: ★倉庫に当てる前の門番 (消す系・他の部屋・security_invoker抜けを止める)
         run: node scripts/sql-guard.mjs supabase/schema.sql
+      - name: ★同じ門番を 当てる1本にも (番号 null の穴の直し・2026-10-20)
+        run: node scripts/sql-guard.mjs supabase/apply-2026-10-20-pw-null.sql
       - name: ★門番の自己確認 (わざと危ない物を食わせて止まるか・11通り)
         run: node scripts/sql-guard.mjs --self-test
       # ── 指示役から配られた見張り（正本＝rakually-test・1文字も書き直さない） ──────
@@ -112,6 +132,10 @@ jobs:
         run: node tests/no-hardcoded-supa.test.mjs
       - name: ★倉庫の向き先 (直書き/裸の文字列/鍵の中に隠しても赤になるかの自己確認)
         run: node tests/no-hardcoded-supa.test.mjs --self-test
+      - name: ★repoの素性と向き先 (originの名前で決める・名札と倉庫と鍵が この線の物か)
+        run: node tests/supa-config-matches-repo.test.mjs
+      - name: ★repoの素性と向き先 (09-12の事故の形・片方だけ入替・tarで運んでから赤になるかの自己確認)
+        run: node tests/supa-config-matches-repo.test.mjs --self-test
 
       # ── 見た目・端末 ──────────────────────────────────────────────
       - name: ★テスト環境の帯 (本番には絶対 出さない・全画面に入っている・頭を隠さない・縦に割れない)
@@ -141,6 +165,14 @@ jobs:
       - name: ★HTMLの中のJS (わざとエスケープを落として赤になるかの自己確認)
         run: node tests/html-script-syntax.test.mjs --self-test
 
+      # ── 見た目（2026-09-10 司さん「絶対これがええ」＝知らせを濃くベタ塗りしない） ──
+      #   ★字で探すと 漏れます★（Exally は `#toast`/`.toast` で探して うちの `.tc-toast` を
+      #   見つけられませんでした）⇒★色は 値に直して 明るさで 見る★
+      - name: ★かぶせる物を 濃くベタ塗りしていないか (値に直して 明るさで見る)
+        run: node tests/nuri-check.test.mjs
+      - name: ★その自己確認 (4通りの書き方・薄い覆いは赤にしない・免除に逃げていない)
+        run: node tests/nuri-check.test.mjs --self-test
+
       # ── 借り物 ────────────────────────────────────────────────────
       - name: ★借りてきた物 (出どころと1バイトも違わない・VENDOR.md と一致)
         run: node tests/vendor-integrity.test.mjs
@@ -150,6 +182,44 @@ jobs:
       # ── 実UI（★押す物の一覧を先に出してから押す★） ─────────────────
       - name: ★実UI (5画面のボタンを1つ残らず押す＋数える→紙→CSV→Excel を実際に通す)
         run: node tests/ui-sweep.mjs
+
+      # ── ブラウザの探し方（2026-09-02 指示役の裁定B・条件④） ────────
+      #   ★探し方は 1か所★（scripts/_browser.mjs）＝前は 4本に 同じ物を 4回 書いていた。
+      #   ここでは ★わざと 見つからない状態を 作って 出方（未測定0／必ず測る場所は赤1）を 数える★。
+      #   ★ブラウザは 要りません（作り物で 測るだけ）★
+      - name: ★ブラウザの探し方 (Windowsのみ/Linuxのみ/どちらも無し の3通り＋出し方2通り)
+        run: node scripts/_browser.mjs --self-test
+      #   ★作り物で 測った物は 本物の機械の答えでは ありません★
+      #   ⇒ この1行で ★ubuntu の上で 実際に どの道を 選んだか★を 見る（止めない・数えない）
+      - name: ★この機械が どの道を選んだか (Linux の道が 効いているかを 目で見る・1行)
+        run: node scripts/_browser.mjs --where
+
+      # ── 死にコード（2026-09-02 指示役の裁定A） ─────────────────────
+      #   ★scripts/ の見張り5本のうち ブラウザが要らないのは これ1本だけ★（手元の実測 2秒）。
+      #   残り4本（screen-check／print-check／align-check／proto-daily）は
+      #   ★ブラウザの探し先が Windows だけ★なので、探し方を1か所に直すまで 載せない（＝赤のまま）。
+      - name: ★死にコードの棚卸し (誰からも呼ばれない関数・CSS・id を赤にする)
+        run: node scripts/dead-check.mjs
+
+      # ── ブラウザが要る 軽い2本（2026-09-06 指示役の裁定C・①） ──────
+      #   ★載せてよいと 分かったのは 実測してから★
+      #   ＝CI の上で `--where` が `/usr/bin/google-chrome（linux）` と 答えた（作り物では 出ない答え）。
+      #   ★重い2本（print-check 32秒／screen-check 63秒）は ここには 載せない★
+      #   ＝「触った時に 走る」形（paths）で 別に 作る。
+      - name: ★日ごとの見本を 描いて測る (17秒)
+        run: node scripts/proto-daily.mjs
+      - name: ★紙と画面の 揃えを測る (20秒・A4横と 375/390/412)
+        run: node scripts/align-check.mjs
+
+      # ── ★次の月の1日★で 丸ごと 走らせ直す（2026-09-06 指示役の裁定・約147秒） ──
+      #   ★守りたい事故は これ1つ★＝★月が替わった瞬間に 一斉に赤★
+      #     09-01〜02 に ダイコメ／Timeally／Castally ＝★1週間で 3件★ 同じ穴を踏んだ。
+      #   ★暦(cron)に 頼らない★＝毎回 走るので ★間引かれない★（定時の回は 遅れて 消える）。
+      #   ★日付は 書かない★＝`--next-month` が ★今日から 数える★。
+      #   ★捕まる事を 確かめてから 載せました★ … 事故の前の状態(8a87cd0)で
+      #     8/31＝★緑 851本★／9/1＝★赤（843本・2/52）★＝★この1つで 実際に 捕まった★
+      - name: ★次の月の1日で 丸ごと 走らせ直す (月初に 一斉に赤 を 先に見つける)
+        run: node scripts/clock-travel.mjs --next-month
 
       # ── 並べ忘れの見張り（★最後★） ───────────────────────────────
       - name: ★CIに並んでいない検査が無いか (足したのに走っていない物を赤にする)
